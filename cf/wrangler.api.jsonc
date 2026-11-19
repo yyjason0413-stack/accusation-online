@@ -1,0 +1,10 @@
+// 不含 Static Assets 的設定：給「以 Cloudflare API 直接上傳 Worker」使用（靜態檔內嵌、卡圖代理）
+{
+  "name": "accusation-online",
+  "main": "src/worker.js",
+  "compatibility_date": "2025-09-01",
+  "durable_objects": { "bindings": [{ "name": "ROOMS", "class_name": "Room" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Room"] }],
+  "rules": [{ "type": "Text", "globs": ["**/public/*.html", "**/public/*.css", "**/public/app.js"], "fallthrough": false }],
+  "observability": { "enabled": true }
+}

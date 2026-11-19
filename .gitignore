@@ -8,3 +8,7 @@ scripts/etunnel/
 test-results/
 playwright-report/
 .DS_Store
+cf/node_modules/
+.wrangler/
+cf/.wrangler/
+dist/

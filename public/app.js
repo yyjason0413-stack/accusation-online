@@ -64,19 +64,31 @@ function onOpen() {
   flushOutbox();
   render();
 }
+// 連線目標：'new'＝建立新房間、4 碼房號＝該房間、null＝大廳（Cloudflare 版每個房間是獨立的 Durable Object）
+let wsTarget = (() => { try { const s = JSON.parse(localStorage.getItem(LS) || 'null'); return s && s.code || null; } catch { return null; } })();
+let pollAllowed = true;
+fetch('/config.json', { cache: 'no-store' }).then(r => r.json()).then(c => { pollAllowed = c.poll !== false; }).catch(() => {});
+function retarget(t) {
+  if (t === wsTarget || mode === 'poll') return;
+  wsTarget = t;
+  if (ws) { try { ws.onclose = null; ws.close(); } catch {} }
+  connected = false; ws = null; connect();
+}
 function connect() {
   if (mode === 'poll') return startPoll();
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   let opened = false;
-  ws = new WebSocket(`${proto}://${location.host}/ws`);
-  const fallback = setTimeout(() => { if (!opened && !wsEverOpened) { mode = 'poll'; try { ws.onclose = null; ws.close(); } catch {} startPoll(); } }, 5000);
-  ws.onopen = () => { opened = wsEverOpened = true; clearTimeout(fallback); onOpen(); };
-  ws.onclose = () => {
-    clearTimeout(fallback); connected = false; render();
-    if (!opened && !wsEverOpened) { mode = 'poll'; return startPoll(); }
-    setTimeout(connect, Math.min(1000 * 2 ** retry++, 8000));
+  const q = wsTarget === 'new' ? '?new=1' : wsTarget ? '?room=' + encodeURIComponent(wsTarget) : '';
+  const sock = ws = new WebSocket(`${proto}://${location.host}/ws${q}`);
+  const fallback = setTimeout(() => { if (!opened && !wsEverOpened && pollAllowed) { mode = 'poll'; try { sock.onclose = null; sock.close(); } catch {} startPoll(); } }, 5000);
+  sock.onopen = () => { if (ws !== sock) return; opened = wsEverOpened = true; clearTimeout(fallback); onOpen(); };
+  sock.onclose = () => {
+    clearTimeout(fallback); if (ws !== sock) return;
+    connected = false; render();
+    if (!opened && !wsEverOpened && pollAllowed) { mode = 'poll'; return startPoll(); }
+    setTimeout(() => { if (ws === sock) connect(); }, Math.min(1000 * 2 ** retry++, 8000));
   };
-  ws.onmessage = ev => onMsg(JSON.parse(ev.data));
+  sock.onmessage = ev => { if (ws === sock) onMsg(JSON.parse(ev.data)); };
 }
 // HTTP 長輪詢備援
 const cid = sessionStorage.getItem('accusation.cid') || (Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)).replace(/[^a-z0-9]/g, '').slice(0, 20).padEnd(10, 'x');
@@ -105,7 +117,7 @@ async function startPoll() {
 }
 function onMsg(m) {
   {
-    if (m.t === 'joined') { seat = m.seat; joinedCode = m.code; localStorage.setItem(LS, JSON.stringify({ code: m.code, token: m.token })); history.replaceState(null, '', '/?room=' + m.code); }
+    if (m.t === 'joined') { wsTarget = m.code; seat = m.seat; joinedCode = m.code; localStorage.setItem(LS, JSON.stringify({ code: m.code, token: m.token })); history.replaceState(null, '', '/?room=' + m.code); }
     else if (m.t === 'state') {
       seat = m.seat; room = m.room;
       const prevSeq = view && view.choice && view.choice.seq;
@@ -117,12 +129,16 @@ function onMsg(m) {
       render();
     } else if (m.t === 'error') {
       toast(m.msg); ui.busy = null; document.body.classList.remove('busy');
-      if (m.gone) { localStorage.removeItem(LS); ui.screen = 'lobby'; room = null; view = null; render(); }
+      if (m.gone) { localStorage.removeItem(LS); wsTarget = null; ui.screen = 'lobby'; room = null; view = null; render(); }
     }
   }
 }
 const outbox = [];
-function send(o) { if (ws && ws.readyState === 1 && connected) ws.send(JSON.stringify(o)); else { outbox.push(o); toast('連線中，稍候會自動送出…', 1500); } }
+function send(o) {
+  const want = o.t === 'create' ? 'new' : o.t === 'join' ? String(o.code || '').toUpperCase() : undefined;
+  if (want !== undefined && mode === 'ws' && want !== wsTarget) { outbox.push(o); return retarget(want); }
+  if (ws && ws.readyState === 1 && connected) ws.send(JSON.stringify(o)); else { outbox.push(o); toast('連線中，稍候會自動送出…', 1500); }
+}
 function flushOutbox() { while (outbox.length && ws && ws.readyState === 1) ws.send(JSON.stringify(outbox.shift())); }
 connect();
 
@@ -238,7 +254,7 @@ function editScreen() {
     render();
   });
 }
-function leave() { localStorage.removeItem(LS); room = null; view = null; ui.screen = 'lobby'; history.replaceState(null, '', '/'); params.delete('room'); if (ws && mode === 'ws') ws.close(); render(); }
+function leave() { localStorage.removeItem(LS); wsTarget = null; room = null; view = null; ui.screen = 'lobby'; history.replaceState(null, '', '/'); params.delete('room'); if (ws && mode === 'ws') ws.close(); render(); }
 
 // ---------- 遊戲畫面 ----------
 function cardEl(c, opts = {}) {

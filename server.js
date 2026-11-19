@@ -17,6 +17,7 @@ const server = http.createServer((req, res) => {
   if (u === '/') u = '/index.html';
   if (u === '/presets.json') { res.writeHead(200, { 'content-type': MIME['.json'], 'cache-control': 'no-cache' }); return res.end(JSON.stringify(require('./engine/engine').PRESET_DECKS)); }
   if (u === '/cards.json') { res.writeHead(200, { 'content-type': MIME['.json'], 'cache-control': 'no-cache' }); return res.end(JSON.stringify(DATA.map(c => Object.assign({ auto: isAutomated(c.id) }, c)))); }
+  if (u === '/config.json') { res.writeHead(200, { 'content-type': MIME['.json'], 'cache-control': 'no-cache' }); return res.end('{"poll":true,"host":"node"}'); }
   if (u === '/healthz') { res.writeHead(200); return res.end('ok'); }
   if (u === '/poll' || u === '/send') return httpTransport(req, res, u);
   const fp = path.normalize(path.join(PUB, u));
