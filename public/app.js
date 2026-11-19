@@ -144,6 +144,18 @@ function flushOutbox() { while (outbox.length && ws && ws.readyState === 1) ws.s
 connect();
 
 // ---------- 大廳 ----------
+const SOCIAL = [
+  { k: 'fb', label: 'Facebook', href: 'https://www.facebook.com/share/1ES9zzG6EW/?mibextid=wwXIfr',
+    svg: '<path fill="currentColor" d="M24 12.07C24 5.4 18.63 0 12 0S0 5.4 0 12.07C0 18.1 4.39 23.1 10.13 24v-8.44H7.08v-3.49h3.05V9.41c0-3.02 1.79-4.69 4.53-4.69 1.31 0 2.68.24 2.68.24v2.97h-1.51c-1.49 0-1.96.93-1.96 1.89v2.25h3.33l-.53 3.49h-2.8V24C19.61 23.1 24 18.1 24 12.07z"/>' },
+  { k: 'yt', label: 'YouTube', href: 'https://youtube.com/@li4n13?si=Sb0s1Rea62LwrT40',
+    svg: '<path fill="currentColor" d="M23.5 6.19a3.02 3.02 0 0 0-2.12-2.14C19.5 3.55 12 3.55 12 3.55s-7.5 0-9.38.5A3.02 3.02 0 0 0 .5 6.19C0 8.08 0 12 0 12s0 3.92.5 5.81a3.02 3.02 0 0 0 2.12 2.14c1.88.5 9.38.5 9.38.5s7.5 0 9.38-.5a3.02 3.02 0 0 0 2.12-2.14C24 15.92 24 12 24 12s0-3.92-.5-5.81zM9.55 15.57V8.43L15.82 12l-6.27 3.57z"/>' },
+  { k: 'pt', label: 'Patreon', href: 'https://www.patreon.com/Lian413?utm_campaign=creatorshare_creator',
+    svg: '<circle fill="currentColor" cx="15.39" cy="9.4" r="7.4"/><rect fill="currentColor" x="1.6" y="2" width="3.6" height="20" rx=".4"/>' },
+];
+function footerHtml() {
+  return `<footer class="sitefoot"><div class="footline">本站由勵恩架設設計，若願意支持請給予追蹤與訂閱</div>
+    <div class="social">${SOCIAL.map(x => `<a class="soc soc-${x.k}" href="${esc(x.href)}" target="_blank" rel="noopener noreferrer" aria-label="${x.label}"><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">${x.svg}</svg><span>${x.label}</span></a>`).join('')}</div></footer>`;
+}
 function lobby() {
   const joinCode = (params.get('room') || '').toUpperCase();
   const sd = selectedDeck();
@@ -162,6 +174,7 @@ function lobby() {
     <button id="ai">單人練習（對戰 AI）</button>
     <div class="card-box"><div>輸入房號加入</div><div class="row"><input id="code" maxlength="4" placeholder="例如 AB3K" style="text-transform:uppercase"><button id="join2">加入</button></div></div>`}
     <div class="sub">卡牌資料與卡圖：愚人古堡工作室《控訴》</div>
+    ${footerHtml()}
   </div>`;
   const saveName = () => { ui.name = document.getElementById('nm').value.trim(); localStorage.setItem('accusation.name', ui.name); };
   const dk = document.getElementById('decks'); if (dk) dk.onclick = () => { saveName(); ui.screen = 'decks'; render(); };
@@ -437,17 +450,59 @@ function statusText() {
 }
 // ---------- 音效（WebAudio 即時合成，無外部音檔）----------
 const SFX = (() => {
-  let ctx = null, master = null;
-  const muted = () => localStorage.getItem('accusation.mute') === '1';
-  const vol = () => { const v = Number(localStorage.getItem('accusation.vol')); return Number.isFinite(v) && localStorage.getItem('accusation.vol') != null ? Math.min(1, Math.max(0, v)) : 0.6; };
-  function unlock() {
+  // 根本原因修正：
+  // 1) 手機上 touchstart／觸控 pointerdown 不算「使用者啟動」，AudioContext 會一直停在 suspended；
+  //    改在 touchend／pointerup／click／keydown 內「同步」建立並 resume()，直到 running 為止。
+  // 2) iOS 靜音開關預設會讓 WebAudio 無聲：設定 navigator.audioSession.type='playback'（Safari 17+），
+  //    並在使用者手勢內播放一段循環的無聲 <audio>，讓頁面進入「媒體播放」類別。
+  let ctx = null, master = null, comp = null, silentEl = null, unlocked = false;
+  const dbg = () => { try { return localStorage.getItem('accusation.sfxDebug') === '1' || /[?&]sfxdebug=1/.test(location.search); } catch { return false; } };
+  const log = (...a) => { if (dbg()) console.log('[sfx]', ...a); };
+  const stats = window.__sfx = { calls: {}, played: {}, state: 'none', unlocks: 0 };
+  // 舊版遺留：曾存成 '1' 的靜音值改用新 key，預設一律有聲音
+  try { if (localStorage.getItem('accusation.mute2') == null) { localStorage.removeItem('accusation.mute'); localStorage.setItem('accusation.mute2', '0'); }
+    const v0 = localStorage.getItem('accusation.vol'); if (v0 != null && !(Number(v0) > 0.05)) localStorage.removeItem('accusation.vol'); } catch {}
+  const muted = () => { try { return localStorage.getItem('accusation.mute2') === '1'; } catch { return false; } };
+  const vol = () => { try { const s = localStorage.getItem('accusation.vol'); const v = Number(s); return s != null && Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 0.8; } catch { return 0.8; } };
+  function silentWavUrl() { // 0.5 秒、8kHz、8-bit 的無聲 WAV
+    const n = 4000, b = new Uint8Array(44 + n), dv = new DataView(b.buffer), w = (o, str) => [...str].forEach((c, i) => b[o + i] = c.charCodeAt(0));
+    w(0, 'RIFF'); dv.setUint32(4, 36 + n, true); w(8, 'WAVE'); w(12, 'fmt '); dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+    dv.setUint32(24, 8000, true); dv.setUint32(28, 8000, true); dv.setUint16(32, 1, true); dv.setUint16(34, 8, true); w(36, 'data'); dv.setUint32(40, n, true); b.fill(128, 44);
+    return URL.createObjectURL(new Blob([b], { type: 'audio/wav' }));
+  }
+  function silentAudio() {
     try {
-      if (!ctx) { const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return; ctx = new AC(); master = ctx.createGain(); master.connect(ctx.destination); }
-      if (ctx.state === 'suspended') ctx.resume();
+      if (!silentEl) {
+        silentEl = document.createElement('audio');
+        silentEl.setAttribute('x-webkit-airplay', 'deny'); silentEl.setAttribute('playsinline', ''); silentEl.preload = 'auto'; silentEl.loop = true;
+        silentEl.src = silentWavUrl(); silentEl.volume = 0.01;
+      }
+      if (silentEl.paused) { const p = silentEl.play(); if (p && p.catch) p.catch(() => {}); }
     } catch {}
   }
+  function unlock(ev) {
+    try {
+      try { if (navigator.audioSession && navigator.audioSession.type !== 'playback') navigator.audioSession.type = 'playback'; } catch {}
+      if (!ctx) {
+        const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
+        ctx = new AC({ latencyHint: 'interactive' });
+        comp = ctx.createDynamicsCompressor(); comp.threshold.value = -14; comp.knee.value = 10; comp.ratio.value = 4;
+        master = ctx.createGain(); master.gain.value = vol();
+        master.connect(comp); comp.connect(ctx.destination);
+        ctx.onstatechange = () => { stats.state = ctx.state; log('state', ctx.state); };
+      }
+      if (ctx.state !== 'running') {
+        const p = ctx.resume(); if (p && p.catch) p.catch(() => {});
+        // iOS：在手勢內播放一個無聲 buffer 解鎖
+        const b = ctx.createBuffer(1, 1, 22050), s = ctx.createBufferSource(); s.buffer = b; s.connect(ctx.destination); s.start(0);
+        if (!navigator.audioSession) silentAudio();
+        stats.unlocks++; log('unlock via', ev && ev.type, ctx.state);
+      } else if (!unlocked) { unlocked = true; }
+      stats.state = ctx.state;
+    } catch (e) { log('unlock error', e); }
+  }
   function env(g, t, a, d, peak) { g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(peak, t + a); g.gain.exponentialRampToValueAtTime(0.0001, t + a + d); }
-  function tone(f, t, dur, type = 'sine', peak = 0.3, f2 = null, a = 0.005) {
+  function tone(f, t, dur, type = 'sine', peak = 0.3, f2 = null, a = 0.008) {
     const o = ctx.createOscillator(), g = ctx.createGain();
     o.type = type; o.frequency.setValueAtTime(f, t); if (f2) o.frequency.exponentialRampToValueAtTime(f2, t + dur);
     env(g, t, a, dur, peak); o.connect(g); g.connect(master); o.start(t); o.stop(t + a + dur + 0.05);
@@ -457,33 +512,40 @@ const SFX = (() => {
     if (!nbuf) { nbuf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate); const d = nbuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1; }
     const s = ctx.createBufferSource(), f = ctx.createBiquadFilter(), g = ctx.createGain();
     s.buffer = nbuf; f.type = ftype; f.frequency.setValueAtTime(freq, t); if (f2) f.frequency.exponentialRampToValueAtTime(f2, t + dur);
-    env(g, t, 0.004, dur, peak); s.connect(f); f.connect(g); g.connect(master); s.start(t); s.stop(t + dur + 0.05);
+    env(g, t, 0.005, dur, peak); s.connect(f); f.connect(g); g.connect(master); s.start(t); s.stop(t + dur + 0.05);
   }
-  const N = { C5: 523.25, E5: 659.25, G5: 783.99, C6: 1046.5, A4: 440, D5: 587.33, F4: 349.23, Ab4: 415.3, Eb4: 311.13, C4: 261.63, G4: 392 };
+  const N = { C5: 523.25, E5: 659.25, G5: 783.99, C6: 1046.5, A4: 440, D5: 587.33, F4: 349.23, Eb4: 311.13, C4: 261.63, G4: 392 };
+  // 手機喇叭對 150Hz 以下幾乎發不出聲，所以每個音效都疊一層中高頻
   const S = {
-    tap: t => tone(1400, t, 0.03, 'triangle', 0.12),
-    draw: t => { noise(t, 0.12, 0.18, 2500, 'highpass', 6000); tone(900, t + 0.02, 0.05, 'sine', 0.05, 1300); },
-    play: t => { tone(170, t, 0.16, 'sine', 0.45, 60); noise(t, 0.08, 0.15, 900); },
-    stamp: t => { tone(95, t, 0.35, 'sine', 0.6, 45); noise(t, 0.18, 0.35, 700); tone(220, t + 0.01, 0.12, 'square', 0.08, 110); },
-    hit: t => { noise(t, 0.14, 0.4, 1800, 'lowpass', 300); tone(240, t, 0.15, 'square', 0.12, 70); },
-    destroy: t => { noise(t, 0.45, 0.25, 3000, 'lowpass', 150); tone(300, t, 0.4, 'sawtooth', 0.05, 60); },
-    ritual: t => [N.C5, N.E5, N.G5, N.C6].forEach((f, i) => { tone(f, t + i * 0.09, 0.5, 'triangle', 0.16); tone(f * 2, t + i * 0.09, 0.25, 'sine', 0.04); }),
-    turn: t => { tone(N.G4, t, 0.25, 'triangle', 0.15); tone(N.C5, t + 0.12, 0.4, 'triangle', 0.17); },
-    win: t => [N.C5, N.E5, N.G5, N.C6, N.G5, N.C6].forEach((f, i) => tone(f, t + i * 0.11, i > 3 ? 0.6 : 0.2, 'triangle', 0.18)),
-    lose: t => [N.G4, N.Eb4, N.C4].forEach((f, i) => tone(f, t + i * 0.22, 0.45, 'sine', 0.2, f * 0.97)),
-    counter: t => { tone(N.A4, t, 0.12, 'square', 0.06); tone(N.A4, t + 0.16, 0.12, 'square', 0.06); },
+    tap: t => { tone(1200, t, 0.06, 'triangle', 0.35); tone(2400, t, 0.03, 'sine', 0.12); },
+    draw: t => { noise(t, 0.18, 0.45, 2000, 'bandpass', 5000); tone(700, t + 0.02, 0.12, 'triangle', 0.25, 1200); },
+    play: t => { tone(330, t, 0.22, 'triangle', 0.55, 160); tone(660, t, 0.12, 'sine', 0.25, 330); noise(t, 0.1, 0.35, 1500); },
+    stamp: t => { tone(180, t, 0.4, 'square', 0.35, 70); noise(t, 0.25, 0.6, 1400, 'lowpass', 400); tone(440, t + 0.01, 0.2, 'sawtooth', 0.22, 220); },
+    hit: t => { noise(t, 0.2, 0.7, 3000, 'lowpass', 500); tone(300, t, 0.2, 'square', 0.3, 90); },
+    destroy: t => { noise(t, 0.6, 0.55, 4000, 'lowpass', 300); tone(420, t, 0.5, 'sawtooth', 0.2, 80); },
+    ritual: t => [N.C5, N.E5, N.G5, N.C6].forEach((f, i) => { tone(f, t + i * 0.1, 0.6, 'triangle', 0.4); tone(f * 2, t + i * 0.1, 0.3, 'sine', 0.12); }),
+    turn: t => { tone(N.G4 * 2, t, 0.3, 'triangle', 0.4); tone(N.C5 * 2, t + 0.14, 0.5, 'triangle', 0.45); },
+    win: t => [N.C5, N.E5, N.G5, N.C6, N.G5, N.C6].forEach((f, i) => tone(f, t + i * 0.12, i > 3 ? 0.7 : 0.25, 'triangle', 0.45)),
+    lose: t => [N.G4, N.Eb4, N.C4].forEach((f, i) => { tone(f * 2, t + i * 0.25, 0.5, 'triangle', 0.4, f * 1.94); tone(f, t + i * 0.25, 0.5, 'sine', 0.2); }),
+    counter: t => { tone(880, t, 0.14, 'square', 0.2); tone(880, t + 0.18, 0.14, 'square', 0.2); },
   };
-  let lastAt = {};
+  const lastAt = {};
   function play(name) {
-    if (muted() || !ctx || ctx.state !== 'running' || !S[name]) return;
+    stats.calls[name] = (stats.calls[name] || 0) + 1;
+    if (muted() || !S[name]) return log('skip', name, muted() ? 'muted' : 'unknown');
+    if (!ctx || ctx.state !== 'running') { log('skip', name, 'ctx', ctx ? ctx.state : 'none'); if (ctx) { const p = ctx.resume(); if (p && p.catch) p.catch(() => {}); } return; }
     const now = ctx.currentTime;
-    if (lastAt[name] && now - lastAt[name] < 0.06) return; // 避免同時疊太多
+    if (lastAt[name] && now - lastAt[name] < 0.06) return;
     lastAt[name] = now;
-    master.gain.setValueAtTime(vol(), now);
-    try { S[name](now + 0.01); } catch {}
+    master.gain.cancelScheduledValues(now); master.gain.setValueAtTime(vol(), now);
+    try { S[name](now + 0.01); stats.played[name] = (stats.played[name] || 0) + 1; log('play', name); } catch (e) { log('err', name, e); }
   }
-  ['pointerdown', 'keydown', 'touchstart'].forEach(ev => window.addEventListener(ev, unlock, { capture: true, passive: true }));
-  return { play, unlock, muted, vol };
+  // 「測試音效」：在點擊手勢中同步解鎖後立即播放
+  function test() { unlock({ type: 'test' }); const go = () => play('ritual'); if (ctx && ctx.state === 'running') go(); else if (ctx) ctx.resume().then(go).catch(() => {}); }
+  // 每次真正的使用者手勢都嘗試解鎖，直到 running
+  ['touchend', 'pointerup', 'click', 'keydown', 'mousedown'].forEach(ev => window.addEventListener(ev, e => { if (!ctx || ctx.state !== 'running') unlock(e); }, { capture: true, passive: true }));
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && ctx && ctx.state !== 'running') { const p = ctx.resume(); if (p && p.catch) p.catch(() => {}); } });
+  return { play, unlock, muted, vol, test, setMuted: m => { try { localStorage.setItem('accusation.mute2', m ? '1' : '0'); } catch {} }, state: () => ctx ? ctx.state : 'none' };
 })();
 document.addEventListener('click', e => { const b = e.target.closest && e.target.closest('button,.opt,select,[data-zone]'); if (b) SFX.play('tap'); }, true);
 // ---------- 新手教學（只顯示一次，可從選單重看）----------
@@ -527,12 +589,14 @@ function settingsHtml(sfx) {
   return `<label class="row setrow">動畫<select id="animSel${sfx}" class="sel mini">${[['normal', '正常'], ['fast', '快速'], ['off', '關閉']].map(([v, t]) => `<option value="${v}" ${m === v ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
     <label class="row setrow"><input type="checkbox" id="haptic${sfx}" style="width:auto" ${hapticOn() ? 'checked' : ''}>震動回饋（支援的裝置）</label>
     <label class="row setrow"><input type="checkbox" id="mute${sfx}" style="width:auto" ${SFX.muted() ? 'checked' : ''}>靜音</label>
+    <div class="row setrow"><button type="button" class="mini sndtest" id="sndTest${sfx}">🔊 測試音效</button><span class="sub" style="text-align:left;margin:0">iPhone 若仍無聲，請確認音量鍵已調高</span></div>
     <label class="row setrow">音量<input type="range" id="vol${sfx}" min="0" max="100" step="5" value="${Math.round(SFX.vol() * 100)}" class="vol"></label>`;
 }
 function bindSettings(sfx) {
   const a = document.getElementById('animSel' + sfx); if (a) a.onchange = () => { localStorage.setItem('accusation.anim', a.value); toast(a.value === 'off' ? '已關閉動畫' : '動畫：' + a.options[a.selectedIndex].text); };
-  const mu = document.getElementById('mute' + sfx); if (mu) mu.onchange = () => { localStorage.setItem('accusation.mute', mu.checked ? '1' : '0'); if (!mu.checked) { SFX.unlock(); setTimeout(() => SFX.play('turn'), 50); } };
-  const vo = document.getElementById('vol' + sfx); if (vo) vo.onchange = () => { localStorage.setItem('accusation.vol', String(Number(vo.value) / 100)); SFX.unlock(); setTimeout(() => SFX.play('play'), 50); };
+  const mu = document.getElementById('mute' + sfx); if (mu) mu.onchange = () => { SFX.setMuted(mu.checked); if (!mu.checked) SFX.test(); };
+  const vo = document.getElementById('vol' + sfx); if (vo) vo.onchange = () => { localStorage.setItem('accusation.vol', String(Number(vo.value) / 100)); SFX.test(); };
+  const st = document.getElementById('sndTest' + sfx); if (st) st.onclick = ev => { ev.stopPropagation(); if (SFX.muted()) { SFX.setMuted(false); if (mu) mu.checked = false; } SFX.test(); setTimeout(() => toast(SFX.state() === 'running' ? '🔊 音效已啟用' : '音效尚未啟用（' + SFX.state() + '），請再點一次'), 250); };
   const h = document.getElementById('haptic' + sfx); if (h) h.onchange = () => { localStorage.setItem('accusation.haptic', h.checked ? '1' : '0'); if (h.checked) buzz(20); };
 }
 

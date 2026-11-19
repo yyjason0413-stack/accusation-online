@@ -37,8 +37,8 @@ async function tutorialAndSettings(browser) {
   if (await page.$('#sheetMinBtn')) await page.click('#sheetMinBtn');
   await page.click('#menuBtn'); await page.waitForSelector('#mute2');
   await page.fill('#vol2', '40').catch(() => {}); await page.$eval('#vol2', e => { e.value = '40'; e.dispatchEvent(new Event('change')); });
-  await page.click('#mute2'); ok(await page.evaluate(() => localStorage.getItem('accusation.mute')) === '1', 'mute persisted');
-  await page.click('#mute2'); ok(await page.evaluate(() => localStorage.getItem('accusation.mute')) === '0', 'unmute persisted');
+  await page.click('#mute2'); ok(await page.evaluate(() => localStorage.getItem('accusation.mute2')) === '1', 'mute persisted');
+  await page.click('#mute2'); ok(await page.evaluate(() => localStorage.getItem('accusation.mute2')) === '0', 'unmute persisted');
   ok(await page.evaluate(() => localStorage.getItem('accusation.vol')) === '0.4', 'volume persisted');
   await page.screenshot({ path: `${SHOTS}/${PFX}-settings.png` });
   await page.click('#tutAgain'); await page.waitForSelector('#tut .tut-box'); await page.click('#tutSkip'); ok(!(await page.$('#tut')), 'skip');

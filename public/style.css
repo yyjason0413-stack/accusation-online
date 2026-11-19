@@ -239,3 +239,17 @@ input.vol { flex: 1; width: auto; margin-left: 8px; accent-color: #c9a86a; }
 .grid.pubgrid { grid-template-columns: repeat(4, 1fr); max-height: 52vh; overflow-y: auto; }
 .mbox textarea { width: 100%; box-sizing: border-box; background: #0f0c0a; color: inherit; border: 1px solid #5a4630; border-radius: 8px; padding: 8px; font: inherit; }
 button.mini { width: auto; padding: 3px 10px; font-size: 12px; margin-left: 8px; }
+
+/* ---------- 首頁頁尾：支持連結 ---------- */
+.sitefoot { margin: 18px 0 8px; padding-top: 16px; border-top: 1px solid #3a2e22; text-align: center; }
+.sitefoot .footline { font-size: 13.5px; line-height: 1.6; color: #e6c27a; letter-spacing: 1px; margin-bottom: 12px; }
+.sitefoot .social { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+.sitefoot .soc { display: inline-flex; align-items: center; gap: 7px; padding: 9px 14px; border-radius: 999px; text-decoration: none; font-size: 14px; font-weight: 700;
+  color: #f3e6cf; background: #201a15; border: 1px solid #5b4a39; transition: transform .12s ease, border-color .12s ease, box-shadow .12s ease; -webkit-tap-highlight-color: transparent; }
+.sitefoot .soc:hover, .sitefoot .soc:focus-visible { border-color: #e6c27a; box-shadow: 0 0 12px #e6c27a55; outline: none; }
+.sitefoot .soc:active { transform: scale(.96); }
+.sitefoot .soc-fb svg { color: #4a8cff; }
+.sitefoot .soc-yt svg { color: #ff3b30; }
+.sitefoot .soc-pt svg { color: #ff6a55; }
+@media (max-width: 380px) { .sitefoot .soc span { display: none; } .sitefoot .soc { padding: 10px 12px; } }
+.sndtest { margin-left: 0 !important; margin-right: 8px; white-space: nowrap; }
