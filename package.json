@@ -9,7 +9,8 @@
   "scripts": {
     "start": "node server.js",
     "test": "node --test test/*.test.js && node test/sim.js 1000 random && node test/sim.js 500 ai",
-    "e2e": "node test/e2e.js http://localhost:8787 300"
+    "e2e": "node test/e2e.js http://localhost:8787 300",
+    "e2e:ux": "node test/ux-e2e.js http://localhost:8787"
   },
   "keywords": [],
   "author": "",

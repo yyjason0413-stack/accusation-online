@@ -150,7 +150,8 @@ function lobby() {
   const leader = sd ? sd.cards.find(id => (CARDS[id] || {}).type === '教主') : null;
   const facHtml = sd ? `<div class="deckpick">${leader ? `<img src="${img(leader)}" alt="">` : ''}<div style="flex:1"><div class="ztitle" style="font-size:16px">${esc(sd.name)}</div><div class="sub" style="text-align:left">${esc(sdv && sdv.faction || '')}${sdv && sdv.secondary ? ' ＋ ' + esc(sdv.secondary) : ''} · 24 張</div></div><button id="decks">換牌組／組牌</button></div>
     <label class="row" style="gap:8px;font-size:13px"><input type="checkbox" id="autoSkip" style="width:auto" ${autoSkip() ? 'checked' : ''}>沒有可控訴的卡時自動跳過</label>
-    <div class="sub" style="text-align:left">關閉時，即使沒有可控訴的卡也會詢問你（只能選不控訴），對手無法從等待時間推測你的手牌。</div>` : '';
+    <div class="sub" style="text-align:left">關閉時，即使沒有可控訴的卡也會詢問你（只能選不控訴），對手無法從等待時間推測你的手牌。</div>
+    ${settingsHtml('1')}` : '';
   $app.innerHTML = `<div class="lobby">
     <h1>控訴</h1><div class="sub">線上對戰版 · 白狐神社 ／ 鴉教團 ／ 逐光者 ／ 禁忌廚房 ／ 門教團 ／ 瘋人院 ／ 疫病中心 ／ 紫靈山 ／ 放逐者（全自動規則）</div>
     <div class="card-box"><label>你的名字</label><input id="nm" maxlength="12" placeholder="玩家" value="${esc(ui.name)}">
@@ -163,6 +164,7 @@ function lobby() {
   </div>`;
   const saveName = () => { ui.name = document.getElementById('nm').value.trim(); localStorage.setItem('accusation.name', ui.name); };
   const dk = document.getElementById('decks'); if (dk) dk.onclick = () => { saveName(); ui.screen = 'decks'; render(); };
+  bindSettings('1');
   const as = document.getElementById('autoSkip'); if (as) as.onchange = () => localStorage.setItem('accusation.autoSkip', as.checked ? '1' : '0');
   const on = (id, fn) => { const e = document.getElementById(id); if (e) e.onclick = () => { saveName(); fn(); }; };
   on('create', () => { localStorage.removeItem(LS); send(Object.assign({ t: 'create', name: ui.name, mode: 'pvp' }, deckPayload())); });
@@ -264,6 +266,9 @@ function cardEl(c, opts = {}) {
   if (opts.act) cls += ' act';
   if (opts.selable) cls += ' selable';
   if (opts.chosen) cls += ' chosen';
+  if (opts.atk) cls += ' atk';
+  if (opts.playable) cls += ' playable';
+  if (opts.dim) cls += ' dim';
   let badges = '';
   if (c.curGuard != null) badges += `<span class="badge b-guard">守${c.curGuard}</span>`;
   if (c.guilty) badges += `<span class="badge b-guilty">罪惡</span>`;
@@ -289,6 +294,11 @@ function actionMap() {
   if (view && view.choice && view.choice.info === 'action') view.choice.options.forEach((o, i) => { if (o.uid != null) (m[o.uid] = m[o.uid] || []).push(i); });
   return m;
 }
+function attackSet() {
+  const s = new Set();
+  if (view && view.choice && view.choice.info === 'action') view.choice.options.forEach(o => { if (o.kind === 'attack' || o.kind === 'crusade') s.add(o.uid); });
+  return s;
+}
 function pickSet() {
   const s = {};
   if (view && view.choice && view.choice.type === 'pick') view.choice.options.forEach((o, i) => { s[o.uid] = i; });
@@ -298,10 +308,11 @@ function sideHtml(p, mine) {
   const am = mine ? actionMap() : {}, ps = pickSet();
   const all = p.field;
   const locName = uid => { const l = all.find(x => x.uid === uid); return l ? (CARDS[l.id] || {}).name : ''; };
-  const ce = c => cardEl(c, { act: !!am[c.uid] || false, selable: ps[c.uid] != null && !ui.sel.includes(ps[c.uid]), chosen: ps[c.uid] != null && ui.sel.includes(ps[c.uid]), locName: locName(c.guardAt) });
+  const ce = c => cardEl(c, { act: !!am[c.uid] && !attackSet().has(c.uid), atk: attackSet().has(c.uid), selable: ps[c.uid] != null && !ui.sel.includes(ps[c.uid]), chosen: ps[c.uid] != null && ui.sel.includes(ps[c.uid]), locName: locName(c.guardAt) });
   // 敵方地點也可能是可選/可襲擊
   const amAll = actionMap();
-  const ceO = c => cardEl(c, { act: !!amAll[c.uid], selable: ps[c.uid] != null && !ui.sel.includes(ps[c.uid]), chosen: ps[c.uid] != null && ui.sel.includes(ps[c.uid]), locName: locName(c.guardAt) });
+  const atkSet = attackSet();
+  const ceO = c => cardEl(c, { act: !!amAll[c.uid] && !atkSet.has(c.uid), atk: atkSet.has(c.uid), selable: ps[c.uid] != null && !ui.sel.includes(ps[c.uid]), chosen: ps[c.uid] != null && ui.sel.includes(ps[c.uid]), locName: locName(c.guardAt) });
   const f = mine ? ce : ceO;
   const TY = c => c.asType || TYPES(c.id);
   const top = all.filter(c => ['教主', '儀式', '魔法'].includes(TY(c)));
@@ -314,13 +325,13 @@ function sideHtml(p, mine) {
 function zoneBar(p, mine) {
   const sc = '★'.repeat(p.score.length) + '☆'.repeat(Math.max(0, 2 - p.score.length));
   return `<div class="bar"><span class="nm">${esc(p.name)}</span><span class="pill">${esc(p.faction)}</span>
-    ${mine ? '' : `<span class="pill">手牌 ${p.handCount}</span>`}
-    <span class="pill">牌庫 ${p.deckCount}</span>
-    <span class="pill btn" data-zone="${p.idx}:conspiracy">陰謀 ${p.conspiracy.length}</span>
-    <span class="pill btn" data-zone="${p.idx}:discard">棄牌 ${p.discard.length}</span>
-    <span class="pill btn" data-zone="${p.idx}:exile">除外 ${p.exile.length}</span>
+    
+    <span class="pill" data-pile="${p.idx}:deck">牌庫 ${p.deckCount}</span>
+    <span class="pill btn" data-zone="${p.idx}:conspiracy" data-pile="${p.idx}:conspiracy">陰謀 ${p.conspiracy.length}</span>
+    <span class="pill btn" data-zone="${p.idx}:discard" data-pile="${p.idx}:discard">棄牌 ${p.discard.length}</span>
+    <span class="pill btn" data-zone="${p.idx}:exile" data-pile="${p.idx}:exile">除外 ${p.exile.length}</span>
     ${p.underCount ? (mine ? `<span class="pill btn" data-zone="${p.idx}:under">獻祭 ${p.underCount}</span>` : `<span class="pill">獻祭 ${p.underCount}</span>`) : ''}
-    <span class="pill btn stars" data-zone="${p.idx}:score">${sc}</span>
+    <span class="pill btn stars" data-zone="${p.idx}:score" data-pile="${p.idx}:score">${sc}</span>
     <span class="pill">星塵 ${p.stardust}</span>${p.cannotAttack ? '<span class="pill" style="background:#6b2620">本回合無法襲擊</span>' : ''}
     ${symHtml(p.symbols)}</div>`;
 }
@@ -339,37 +350,354 @@ function statusText() {
   }
   return '';
 }
+// ---------- 設定：動畫／震動 ----------
+const reduceMotion = () => window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+const animMode = () => localStorage.getItem('accusation.anim') || (reduceMotion() ? 'off' : 'normal');
+const animK = () => ({ normal: 1, fast: 0.55, off: 0 })[animMode()] ?? 1;
+const hapticOn = () => localStorage.getItem('accusation.haptic') !== '0';
+function buzz(p) { if (hapticOn() && navigator.vibrate) try { navigator.vibrate(p); } catch {} }
+function settingsHtml(sfx) {
+  const m = animMode();
+  return `<label class="row setrow">動畫<select id="animSel${sfx}" class="sel mini">${[['normal', '正常'], ['fast', '快速'], ['off', '關閉']].map(([v, t]) => `<option value="${v}" ${m === v ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
+    <label class="row setrow"><input type="checkbox" id="haptic${sfx}" style="width:auto" ${hapticOn() ? 'checked' : ''}>震動回饋（支援的裝置）</label>`;
+}
+function bindSettings(sfx) {
+  const a = document.getElementById('animSel' + sfx); if (a) a.onchange = () => { localStorage.setItem('accusation.anim', a.value); toast(a.value === 'off' ? '已關閉動畫' : '動畫：' + a.options[a.selectedIndex].text); };
+  const h = document.getElementById('haptic' + sfx); if (h) h.onchange = () => { localStorage.setItem('accusation.haptic', h.checked ? '1' : '0'); if (h.checked) buzz(20); };
+}
+
+// ---------- 遊戲畫面 ----------
+let prevView = null, prevSeat = null, drag = null, renderPending = false, overShownSeq = null;
 function game() {
   if (!view) { $app.innerHTML = '<div class="lobby"><h1>控訴</h1><div class="sub">載入中…</div></div>'; return; }
+  if (drag) { renderPending = true; return; }
   const me = view.players[seat], op = view.players[1 - seat];
   const am = actionMap(), ps = pickSet();
-  const handHtml = (me.hand || []).map(c => cardEl(c, { act: !!am[c.uid], selable: ps[c.uid] != null && !ui.sel.includes(ps[c.uid]), chosen: ps[c.uid] != null && ui.sel.includes(ps[c.uid]) })).join('') || '<span class="empty">沒有手牌</span>';
-  const leaderHtml = me.conspiracy.length ? `<div class="zone-label">陰謀區${view.players[0].score.length + view.players[1].score.length === 0 ? '（教主需任一方完成 1 個儀式後才能打出）' : ''}</div><div class="zone-row">${me.conspiracy.map(c => cardEl(c, { act: !!am[c.uid] })).join('')}</div>` : '';
+  const ch = view.choice;
+  const actionPhase = ch && ch.info === 'action';
+  const handCards = me.hand || [];
+  const handHtml = handCards.map(c => cardEl(c, { act: !!am[c.uid], playable: playIdx(c.uid) >= 0, dim: actionPhase && !am[c.uid], selable: ps[c.uid] != null && !ui.sel.includes(ps[c.uid]), chosen: ps[c.uid] != null && ui.sel.includes(ps[c.uid]) })).join('');
+  const leaderHtml = me.conspiracy.length ? `<div class="zone-label">陰謀區${view.players[0].score.length + view.players[1].score.length === 0 ? '（教主需任一方完成 1 個儀式後才能打出）' : ''}</div><div class="zone-row consp">${me.conspiracy.map(c => cardEl(c, { act: !!am[c.uid], playable: playIdx(c.uid) >= 0, selable: ps[c.uid] != null && !ui.sel.includes(ps[c.uid]), chosen: ps[c.uid] != null && ui.sel.includes(ps[c.uid]) })).join('')}</div>` : '';
   const stack = [...me.stack, ...op.stack];
   const last = view.log.slice(-1)[0];
-  const endIdx = view.choice && view.choice.info === 'action' ? view.choice.options.findIndex(o => o.kind === 'end') : -1;
-  const hasActs = view.choice && view.choice.info === 'action' && view.choice.options.length > 1;
-  $app.innerHTML = `<div class="game">
-    ${zoneBar(op, false)}
+  const endIdx = actionPhase ? ch.options.findIndex(o => o.kind === 'end') : -1;
+  const hasActs = actionPhase && ch.options.length > 1;
+  const nBacks = Math.min(op.handCount, 12);
+  const backs = Array.from({ length: nBacks }, (_, i) => { const t = nBacks > 1 ? (i - (nBacks - 1) / 2) / ((nBacks - 1) / 2) : 0; return `<span class="cb" style="transform:translateY(${(t * t * 4).toFixed(1)}px) rotate(${(-t * 8).toFixed(1)}deg)"></span>`; }).join('');
+  const myTurn = view.active === seat && view.winner == null;
+  const boardEl = $app.querySelector('.board');
+  const scrollTop = boardEl ? boardEl.scrollTop : null;
+  const snapshot = snap();
+  $app.innerHTML = `<div class="game ${myTurn ? 'myturn' : 'opturn'}">
+    <div class="topwrap ${!myTurn && view.winner == null ? 'active' : ''}">${zoneBar(op, false)}
+      <div class="opphand" id="oppHand" data-pile="${op.idx}:hand"><span class="backs">${backs}</span><span class="hc">手牌 ${op.handCount}</span></div></div>
     <div class="board">
       ${sideHtml(op, false)}
-      ${stack.length ? `<div class="zone-label">結算中</div><div class="zone-row">${stack.map(c => cardEl(c)).join('')}</div>` : ''}
+      ${stack.length ? `<div class="zone-label">結算中</div><div class="zone-row stackrow">${stack.map(c => cardEl(c)).join('')}</div>` : ''}
       ${sideHtml(me, true)}
       ${leaderHtml}
+      <div class="dropzone">放開以打出</div>
     </div>
     <div class="lastlog" id="lastlog">${last ? esc(last.text) : ''}</div>
-    <div class="mid"><div class="st">${statusText()}</div>
+    <div class="mid ${ch && ch.info === 'counter' ? 'counter' : ''}"><div class="st">${statusText()}</div>
       <button id="logBtn">日誌</button>
       ${hasActs ? '<button id="actsBtn">行動</button>' : ''}
-      ${endIdx >= 0 ? '<button class="primary" id="endBtn">結束回合</button>' : ''}
-      <button id="menuBtn">⋯</button></div>
-    ${zoneBar(me, true)}
-    <div class="hand">${handHtml}</div>
+      ${endIdx >= 0 ? `<button class="primary ${view.actionsLeft === 0 ? 'glow' : ''}" id="endBtn">結束回合</button>` : ''}
+      <button id="menuBtn" aria-label="選單">⋯</button></div>
+    <div class="botwrap ${myTurn ? 'active' : ''}">${zoneBar(me, true)}</div>
+    <div class="hand fan" data-pile="${me.idx}:hand">${handHtml || '<span class="empty">沒有手牌</span>'}</div>
   </div>
   ${sheetHtml()}
   ${overHtml()}
   ${connected ? '' : '<div class="conn">連線中斷，重新連線中…</div>'}`;
+  document.documentElement.style.setProperty('--k', String(animK() || 0.001));
+  document.body.classList.toggle('noanim', !animK());
+  layoutHand();
+  const nb = $app.querySelector('.board');
+  if (nb && scrollTop != null) nb.scrollTop = scrollTop;
   bindGame();
+  try { runFx(prevSeat === seat ? prevView : null, view, snapshot); } catch (e) { console.warn('fx', e); }
+  prevView = view; prevSeat = seat;
+}
+function playIdx(uid) {
+  const ch = view && view.choice;
+  if (!ch || ch.info !== 'action') return -1;
+  return ch.options.findIndex(o => o.uid === uid && o.kind === 'play');
+}
+function layoutHand() {
+  const h = $app.querySelector('.hand.fan'); if (!h) return;
+  const cs = [...h.querySelectorAll('.c')]; const n = cs.length; if (!n) return;
+  const W = h.clientWidth, cw = cs[0].offsetWidth || 78;
+  const spacing = n > 1 ? Math.min(cw + 6, (W - 28 - cw) / (n - 1)) : 0;
+  const total = spacing * (n - 1) + cw, left0 = (W - total) / 2;
+  const maxRot = Math.min(12, n * 1.6);
+  cs.forEach((el, i) => {
+    const t = n > 1 ? (i - (n - 1) / 2) / ((n - 1) / 2) : 0;
+    el.style.left = (left0 + i * spacing).toFixed(1) + 'px';
+    el.style.zIndex = 10 + i;
+    el.style.transform = `translateY(${(t * t * 12).toFixed(1)}px) rotate(${(t * maxRot).toFixed(1)}deg)`;
+  });
+}
+window.addEventListener('resize', () => { if (ui.screen === 'game') layoutHand(); });
+
+// ---------- 動畫（依狀態差異與日誌事件驅動，不阻擋操作）----------
+function snap() {
+  const m = new Map();
+  $app.querySelectorAll('.game [data-uid]').forEach(el => m.set(el.dataset.uid, { r: el.getBoundingClientRect(), html: el.outerHTML, id: el.dataset.id, base: el.style.transform || '', hand: !!el.closest('.hand') }));
+  return m;
+}
+function zoneMap(v) {
+  const m = new Map();
+  if (!v) return m;
+  for (const p of v.players) for (const z of ['field', 'hand', 'conspiracy', 'discard', 'exile', 'score', 'stack', 'under']) for (const c of (p[z] || [])) m.set(String(c.uid), { p: p.idx, z, c });
+  return m;
+}
+function pileRect(p, z) {
+  let el = $app.querySelector(`[data-pile="${p}:${z}"]`);
+  if (!el && z === 'field') el = $app.querySelector(p === seat ? '.side.me' : '.side.opp');
+  if (!el && (z === 'stack')) el = $app.querySelector('.stackrow');
+  if (!el) el = $app.querySelector(`[data-pile="${p}:deck"]`);
+  return el ? el.getBoundingClientRect() : null;
+}
+const center = r => ({ x: r.left + r.width / 2, y: r.top + r.height / 2 });
+const nameOf = id => (CARDS[id] || {}).name;
+function boardElByName(name, prefer) {
+  const els = [...$app.querySelectorAll('.board .c[data-id]')].filter(e => nameOf(e.dataset.id) === name);
+  return (prefer && els.find(e => e.closest(prefer))) || els[0] || null;
+}
+let fxQueue = [], fxBusy = false;
+function queueOverlay(fn) { if (fxQueue.length > 3) fxQueue.shift(); fxQueue.push(fn); if (!fxBusy) nextOverlay(); }
+function nextOverlay() {
+  const fn = fxQueue.shift(); if (!fn) { fxBusy = false; return; }
+  fxBusy = true; const ms = fn(); setTimeout(nextOverlay, Math.max(80, ms || 0));
+}
+function overlay(cls, html, ms) {
+  const k = animK(); if (!k) return 0;
+  const d = Math.round(ms * k);
+  const el = document.createElement('div'); el.className = 'fxo ' + cls; el.innerHTML = html; el.style.setProperty('--d', d + 'ms');
+  document.body.appendChild(el); setTimeout(() => el.remove(), d + 60);
+  return d;
+}
+function ghostOf(s) {
+  const g = document.createElement('div'); g.className = 'fxghost'; g.innerHTML = s.html;
+  Object.assign(g.style, { left: s.r.left + 'px', top: s.r.top + 'px', width: s.r.width + 'px', height: s.r.height + 'px' });
+  const inner = g.firstElementChild; if (inner) inner.removeAttribute('style');
+  document.body.appendChild(g); return g;
+}
+function popNum(r, text, cls = '') {
+  const k = animK(); if (!k || !r) return;
+  const e = document.createElement('div'); e.className = 'pop ' + cls; e.textContent = text;
+  const c = center(r); e.style.left = c.x + 'px'; e.style.top = c.y + 'px'; e.style.setProperty('--d', Math.round(600 * k) + 'ms');
+  document.body.appendChild(e); setTimeout(() => e.remove(), 650 * k + 50);
+}
+function runFx(pv, v, snapshot) {
+  const k = animK();
+  const nm = zoneMap(v);
+  // 勝負畫面
+  if (v.winner != null && overShownSeq !== v.log.length + ':' + v.turnNo) {
+    overShownSeq = v.log.length + ':' + v.turnNo;
+    if (pv && pv.winner == null) { const o = $app.querySelector('.over'); if (o) o.classList.add(v.winner === seat ? 'win' : 'lose', 'fx-in'); buzz(v.winner === seat ? [30, 40, 60] : 80); }
+  }
+  if (!pv || !k || v.turnNo < pv.turnNo) return;
+  const pm = zoneMap(pv);
+  const D = ms => Math.round(ms * k);
+  const ease = 'cubic-bezier(.2,.8,.2,1)';
+  // 1) 進場／移動（FLIP）
+  let drawN = 0;
+  $app.querySelectorAll('.game [data-uid]').forEach(el => {
+    const uid = el.dataset.uid, s = snapshot.get(uid), base = el.style.transform || '';
+    const r = el.getBoundingClientRect();
+    const was = pm.get(uid), now = nm.get(uid);
+    if (s) {
+      const dx = s.r.left - r.left, dy = s.r.top - r.top;
+      if (Math.abs(dx) + Math.abs(dy) > 3) {
+        const played = was && was.z !== 'field' && now && now.z === 'field';
+        el.animate(played
+          ? [{ transform: `translate(${dx}px,${dy}px) ${s.base}`, zIndex: 30 }, { transform: `translate(${dx * 0.3}px,${dy * 0.3}px) scale(1.25)`, offset: 0.55 }, { transform: base || 'none' }]
+          : [{ transform: `translate(${dx}px,${dy}px) ${s.base}` }, { transform: base || 'none' }], { duration: D(played ? 480 : 320), easing: ease });
+        if (played) setTimeout(() => el.classList.add('fx-land'), D(400));
+      }
+    } else if (now) {
+      let src = was ? pileRect(was.p, was.z) : null;
+      if (!src) src = now.z === 'hand' ? pileRect(now.p, 'deck') : (now.p === seat ? pileRect(now.p, 'deck') : pileRect(now.p, 'hand'));
+      if (!src) return;
+      const a = center(src), b = center(r);
+      const isDraw = now.z === 'hand' && !was;
+      const delay = isDraw ? D(70 * drawN++) : 0;
+      const fromField = now.z === 'field';
+      el.animate([{ transform: `translate(${a.x - b.x}px,${a.y - b.y}px) scale(.3) ${isDraw ? 'rotate(-20deg)' : ''}`, opacity: 0.2 },
+        fromField ? { transform: 'scale(1.25)', opacity: 1, offset: 0.6 } : { opacity: 1, offset: 0.5 },
+        { transform: base || 'none', opacity: 1 }], { duration: D(fromField ? 500 : 420), delay, easing: ease, fill: 'backwards' });
+      if (fromField) setTimeout(() => el.classList.add('fx-land'), D(450));
+    }
+    // 罪惡、可執行、聲量變化
+    if (was && now && was.z === 'field' && now.z === 'field') {
+      if (!was.c.guilty && now.c.guilty) { el.classList.add('fx-guilty'); popNum(r, '罪惡', 'bad'); }
+      else if (was.c.guilty && !now.c.guilty) el.classList.add('fx-clear');
+      if (!was.c.ready && now.c.ready) el.classList.add('fx-pulse');
+      if (was.c.vol != null && now.c.vol != null && was.c.vol !== now.c.vol) popNum(r, (now.c.vol > was.c.vol ? '+' : '') + (now.c.vol - was.c.vol), now.c.vol > was.c.vol ? 'good' : 'bad');
+    }
+  });
+  // 2) 離場：殘影飛向目的區（棄牌／除外／計分…）
+  const atk = v.log.filter(l => l.n > ((pv.log.slice(-1)[0] || {}).n ?? -1));
+  const hadAttack = atk.some(l => /^⚔/.test(l.text));
+  for (const [uid, s] of snapshot) {
+    if ($app.querySelector(`.game [data-uid="${uid}"]`)) continue;
+    const now = nm.get(uid), was = pm.get(uid);
+    const z = now ? now.z : 'hand';
+    const p = now ? now.p : (was ? was.p : 1 - seat);
+    const dst = pileRect(p, z);
+    const g = ghostOf(s);
+    const wait = hadAttack && was && was.z === 'field' ? D(260) : 0;
+    let frames;
+    if (z === 'exile') frames = [{ transform: s.base || 'none', filter: 'none', opacity: 1 }, { transform: `translateY(-26px) scale(1.12)`, filter: 'blur(5px) brightness(1.8) saturate(0)', opacity: 0 }];
+    else if (dst) {
+      const a = center(s.r), b = center(dst);
+      const burn = z === 'discard' && was && was.z === 'field';
+      frames = [{ transform: s.base || 'none', filter: 'none', opacity: 1 },
+        burn ? { transform: 'scale(1.05)', filter: 'sepia(1) brightness(1.6) saturate(3) hue-rotate(-20deg)', opacity: 1, offset: 0.35 } : { opacity: 1, offset: 0.2 },
+        { transform: `translate(${b.x - a.x}px,${b.y - a.y}px) scale(.25) rotate(${z === 'score' ? 0 : 25}deg)`, filter: burn ? 'sepia(1) brightness(.4)' : 'none', opacity: z === 'score' ? 0.9 : 0 }];
+    } else frames = [{ opacity: 1 }, { opacity: 0, transform: 'scale(.6)' }];
+    const anim = g.animate(frames, { duration: D(z === 'exile' ? 520 : 460), delay: wait, easing: 'ease-in', fill: 'both' });
+    anim.onfinish = () => g.remove(); setTimeout(() => g.remove(), D(1200) + 200);
+  }
+  // 3) 日誌事件
+  let turnLine = null;
+  for (const l of atk) {
+    const t = l.text;
+    if (/^⚖/.test(t)) {
+      buzz([40, 30, 60]);
+      const m = t.match(/控訴 《(.+?)》/);
+      const tgt = m && boardElByName(m[1]); if (tgt) tgt.classList.add('fx-accused');
+      queueOverlay(() => overlay('stamp', `<div class="stampbox"><div class="big">控訴！</div><div class="small">${esc(t.replace(/^⚖\s*/, ''))}</div></div>`, 600));
+    } else if (/^⚔/.test(t)) {
+      buzz(30);
+      const m = t.match(/^⚔ .+? 以 (.*) (?:聖戰|襲擊) 《([^》]+)》（襲擊聲量 (\d+)/);
+      if (m) {
+        const attackers = [...m[1].matchAll(/《(.+?)》/g)].map(x => x[1]);
+        const tName = m[2];
+        let tEl = boardElByName(tName); let tRect = tEl ? tEl.getBoundingClientRect() : null;
+        if (!tRect) for (const [, s] of snapshot) if (nameOf(s.id) === tName) { tRect = s.r; break; }
+        const side = view.active === seat ? '.side.me' : '.side.opp';
+        attackers.forEach((nmx, i) => {
+          const a = boardElByName(nmx, side); if (!a || !tRect) return;
+          const ar = a.getBoundingClientRect(), A = center(ar), B = center(tRect);
+          const dx = (B.x - A.x) * 0.55, dy = (B.y - A.y) * 0.55;
+          a.animate([{ transform: 'none' }, { transform: `translate(${-dx * 0.08}px,${-dy * 0.08}px) scale(1.08)`, offset: 0.25 }, { transform: `translate(${dx}px,${dy}px) scale(1.12)`, offset: 0.55 }, { transform: 'none' }], { duration: D(520), delay: D(i * 70), easing: 'ease-in-out' });
+        });
+        if (tEl) setTimeout(() => tEl.animate([{ transform: 'none' }, { transform: 'translateX(-6px) rotate(-3deg)' }, { transform: 'translateX(6px) rotate(3deg)' }, { transform: 'translateX(-3px)' }, { transform: 'none' }], { duration: D(300) }), D(280));
+        setTimeout(() => popNum(tRect, '⚔ ' + m[3], 'atk'), D(280));
+        if (tRect) setTimeout(() => overlay('flash', '', 220), D(270));
+      }
+    } else if (/^★/.test(t)) {
+      buzz([20, 30, 20]);
+      const m = t.match(/完成儀式 《(.+?)》/);
+      queueOverlay(() => overlay('ritual', `<div class="ritbox">★ 完成儀式<div class="small">${esc(m ? m[1] : '')}</div></div>`, 600));
+      const sc = $app.querySelectorAll('.stars'); sc.forEach(e => e.classList.add('fx-pulse'));
+    } else if (/飛升 《/.test(t)) {
+      const m = t.match(/飛升 《(.+?)》/); const e = m && boardElByName(m[1]); if (e) e.classList.add('fx-ascend');
+    } else if (/^—— 第/.test(t)) turnLine = l;
+  }
+  if (turnLine) {
+    const mine = v.active === seat;
+    if (mine) buzz(25);
+    queueOverlay(() => overlay('turn ' + (mine ? 'mine' : 'theirs'), `<div class="tb">${mine ? '你的回合' : '對手回合'}</div>`, 600));
+  }
+  if (v.choice && v.choice.info === 'counter' && !(pv.choice && pv.choice.info === 'counter')) buzz([15, 40, 15]);
+}
+
+// ---------- 手勢：點擊（預覽）、長按（放大檢視）、拖曳出牌 ----------
+let peekEl = null, suppressClick = false;
+function showPeek(id) {
+  hidePeek();
+  const d = CARDS[id] || {};
+  peekEl = document.createElement('div'); peekEl.className = 'peek';
+  peekEl.innerHTML = `<img src="${img(id, 640)}" alt=""><div class="pk"><b>${esc(d.name || '')}</b><span>${esc([d.type, d.faction, d.volume != null ? '聲量 ' + d.volume : '', d.calamity != null ? '災厄 ' + d.calamity : '', d.guard != null ? '守護 ' + d.guard : ''].filter(Boolean).join(' · '))}</span><div>${esc(d.effect || '')}</div></div>`;
+  document.body.appendChild(peekEl); buzz(10);
+}
+function hidePeek() { if (peekEl) { peekEl.remove(); peekEl = null; } }
+function bindCardGestures(el) {
+  const uid = Number(el.dataset.uid), id = el.dataset.id;
+  const inHand = !!el.closest('.hand') || !!el.closest('.zone-row.consp');
+  let sx = 0, sy = 0, timer = null, pid = null;
+  const move = e => {
+    if (e.pointerId !== pid) return;
+    const dx = e.clientX - sx, dy = e.clientY - sy;
+    if (!drag && !peekEl && Math.hypot(dx, dy) > 9) {
+      clearTimeout(timer);
+      const pi = playIdx(uid);
+      if (inHand && pi >= 0 && !document.body.classList.contains('busy')) startDrag(el, e, pi);
+      else return release();
+    }
+    if (drag && drag.el === el) { e.preventDefault(); moveDrag(e); }
+  };
+  const up = e => {
+    if (e.pointerId !== pid) return;
+    release();
+    if (peekEl) { hidePeek(); suppressClick = true; setTimeout(() => { suppressClick = false; }, 350); }
+    if (drag && drag.el === el) { endDrag(e); suppressClick = true; setTimeout(() => { suppressClick = false; }, 350); }
+  };
+  const cancel = e => { if (e.pointerId !== pid) return; release(); hidePeek(); if (drag && drag.el === el) cancelDrag(); };
+  function release() { clearTimeout(timer); window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); window.removeEventListener('pointercancel', cancel); }
+  el.addEventListener('pointerdown', e => {
+    if (e.button > 0) return;
+    sx = e.clientX; sy = e.clientY; pid = e.pointerId;
+    release();
+    window.addEventListener('pointermove', move, { passive: false });
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', cancel);
+    timer = setTimeout(() => { if (!drag) { showPeek(id); suppressClick = true; } }, 380);
+  });
+  el.addEventListener('contextmenu', e => e.preventDefault());
+  el.addEventListener('click', () => {
+    if (suppressClick) { suppressClick = false; return; }
+    const ps = pickSet();
+    if (view && view.choice && view.choice.type === 'pick' && ps[uid] != null) { buzz(8); return togglePick(ps[uid]); }
+    openCard(uid, id);
+  });
+}
+function startDrag(el, e, pi) {
+  const r = el.getBoundingClientRect();
+  const g = document.createElement('div'); g.className = 'dragghost';
+  g.innerHTML = el.innerHTML;
+  Object.assign(g.style, { width: r.width + 'px', height: r.height + 'px', left: '0px', top: '0px' });
+  document.body.appendChild(g);
+  drag = { el, g, pi, r, ox: e.clientX - r.left, oy: e.clientY - r.top, over: false };
+  el.classList.add('dragging'); document.body.classList.add('dragmode'); buzz(10);
+  moveDrag(e);
+}
+function dropOk(e) { const h = $app.querySelector('.hand'); return h && e.clientY < h.getBoundingClientRect().top - 12; }
+function moveDrag(e) {
+  const d = drag; if (!d) return;
+  const x = e.clientX - d.ox, y = e.clientY - d.oy;
+  const over = dropOk(e);
+  d.g.style.transform = `translate(${x}px,${y}px) scale(${over ? 1.2 : 1.1}) rotate(${over ? 0 : -4}deg)`;
+  if (over !== d.over) { d.over = over; document.body.classList.toggle('dropover', over); if (over) buzz(6); }
+}
+function endDrag(e) {
+  const d = drag; if (!d) return;
+  if (dropOk(e)) {
+    const k = animK();
+    d.g.animate([{ opacity: 1 }, { opacity: 0, transform: d.g.style.transform + ' scale(1.15)' }], { duration: Math.max(1, 220 * k), fill: 'forwards' }).onfinish = () => d.g.remove();
+    setTimeout(() => d.g.remove(), 400);
+    finishDrag();
+    ui.lastPlayDrag = true;
+    answer([d.pi]);
+  } else cancelDrag();
+}
+function cancelDrag() {
+  const d = drag; if (!d) return;
+  const k = animK();
+  const cur = d.g.style.transform;
+  const anim = d.g.animate([{ transform: cur }, { transform: `translate(${d.r.left}px,${d.r.top}px)` }], { duration: Math.max(1, 260 * k), easing: 'cubic-bezier(.2,.8,.2,1)', fill: 'forwards' });
+  anim.onfinish = () => d.g.remove(); setTimeout(() => d.g.remove(), 500);
+  finishDrag();
+}
+function finishDrag() {
+  const d = drag; drag = null;
+  if (d) d.el.classList.remove('dragging');
+  document.body.classList.remove('dragmode', 'dropover');
+  if (renderPending) { renderPending = false; render(); }
 }
 function sheetHtml() {
   const ch = view.choice;
@@ -384,7 +712,8 @@ function sheetHtml() {
     const sum = ch.options.some(o => o.val != null) ? ui.sel.reduce((s, i) => s + (ch.options[i].val || 0), 0) : null;
     foot = `<div class="foot"><button id="sheetMinBtn" class="ghost">看場面</button>${ch.suggest ? '<button id="suggestBtn" class="ghost">自動選擇</button>' : ''}<button id="confirm" class="primary" ${ok ? '' : 'disabled'}>確定（${ui.sel.length}${ch.max > 1 || ch.min !== ch.max ? `／${ch.min === ch.max ? ch.min : ch.min + '~' + ch.max}` : ''}）${sum != null ? ` 合計 ${sum}` : ''}</button></div>`;
   } else foot = `<div class="foot"><button id="sheetMinBtn" class="ghost">看場面</button></div>`;
-  return `<div class="sheet"><div class="grab"></div><div class="pr">${esc(ch.prompt)}</div><div class="opts">${opts}</div>${foot}</div>`;
+  const cban = ch.info === 'counter' ? '<div class="cban">⚖ 控訴時機：要展示手牌控訴這個效果嗎？</div>' : '';
+  return `<div class="sheet ${ch.info === 'counter' ? 'counter' : ''}"><div class="grab"></div>${cban}<div class="pr">${esc(ch.prompt)}</div><div class="opts">${opts}</div>${foot}</div>`;
 }
 function actsSheet(ch) {
   return `<div class="sheet"><div class="grab"></div><div class="pr">選擇行動（剩餘 ${view.actionsLeft}）</div><div class="opts">${ch.options.map((o, i) => `<button class="opt" data-act="${i}">${o.cardId ? `<img src="${img(o.cardId)}">` : ''}<span>${esc(o.label)}</span></button>`).join('')}</div><div class="foot"><button id="closeActs" class="ghost">關閉</button></div></div>`;
@@ -419,7 +748,7 @@ function answer(sel) {
 }
 function bindGame() {
   const q = s => $app.querySelector(s);
-  $app.querySelectorAll('.c').forEach(el => el.onclick = () => openCard(Number(el.dataset.uid), el.dataset.id));
+  $app.querySelectorAll('.game .c[data-uid]').forEach(bindCardGestures);
   $app.querySelectorAll('[data-zone]').forEach(el => el.onclick = () => { const [p, z] = el.dataset.zone.split(':'); openZone(Number(p), z); });
   $app.querySelectorAll('[data-ask]').forEach(el => el.onclick = e => { if (e.target.dataset.zoomid) return; answer([Number(el.dataset.ask)]); });
   $app.querySelectorAll('[data-act]').forEach(el => el.onclick = () => answer([Number(el.dataset.act)]));
@@ -506,14 +835,17 @@ function openLog() {
 }
 function openMenu() {
   showModal(`<div class="ztitle">選單</div><div class="sub">房號 ${room ? room.code : ''} · ${room && room.mode === 'ai' ? '對戰 AI' : '線上對戰'}</div>
-    <div class="zeff" style="font-size:12.5px">玩法提示：發亮（金框）的卡可以執行行動，點卡片查看效果與可用行動；藍框代表目前可選擇的目標。罪惡信徒會橫置並變暗。按「行動」可看到所有可用行動。</div>
+    <div class="zeff" style="font-size:12.5px">玩法提示：金色發光的卡可以執行行動，手牌可直接拖曳到場上打出；點卡片查看效果與可用行動，長按可放大檢視。紅框（⚔）是可以襲擊的目標，藍框是目前可選擇的目標。罪惡信徒會橫置並變暗。</div>
     <label class="row" style="gap:8px"><input type="checkbox" id="autoSkip2" style="width:auto" ${autoSkip() ? 'checked' : ''}>沒有可控訴的卡時自動跳過</label>
+    ${settingsHtml('2')}
     <div class="acts"><button class="danger" id="concede">投降</button><button id="toLobby2">回大廳（可用連結回來）</button><button class="ghost" data-close>關閉</button></div>`);
   document.getElementById('autoSkip2').onchange = e => { localStorage.setItem('accusation.autoSkip', e.target.checked ? '1' : '0'); send({ t: 'option', autoSkip: e.target.checked }); toast(e.target.checked ? '已開啟自動跳過' : '已關閉自動跳過：每次災厄都會詢問你'); };
+  bindSettings('2');
   document.getElementById('concede').onclick = () => { if (confirm('確定投降？')) { send({ t: 'concede' }); hideModal(); } };
   document.getElementById('toLobby2').onclick = () => { hideModal(); ui.screen = 'lobby'; history.replaceState(null, '', '/'); params.delete('room'); view = null; room = null; render(); };
 }
 function render() {
+  if (drag && ui.screen === 'game') { renderPending = true; return; }
   if (ui.screen === 'decks') return decksScreen();
   if (ui.screen === 'edit') return editScreen();
   if (ui.screen === 'lobby' || !room) return lobby();
