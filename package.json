@@ -1,0 +1,27 @@
+{
+  "name": "accusation-online",
+  "version": "1.0.0",
+  "description": "《控訴》線上對戰（9 個教團全自動規則）",
+  "main": "server.js",
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/*.test.js && node test/sim.js 1000 random && node test/sim.js 500 ai",
+    "e2e": "node test/e2e.js http://localhost:8787 300"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "ws": "^8.22.2"
+  },
+  "devDependencies": {
+    "playwright": "^1.65.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

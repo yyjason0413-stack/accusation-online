@@ -1,0 +1,10 @@
+node_modules/
+/400/
+shots/
+*.log
+scripts/etunnel/
+*.bak
+*.tgz
+test-results/
+playwright-report/
+.DS_Store
