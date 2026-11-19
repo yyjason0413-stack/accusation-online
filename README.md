@@ -1,3 +1,14 @@
+---
+title: 控訴 Accusation Online
+emoji: 🃏
+colorFrom: purple
+colorTo: gray
+sdk: docker
+app_port: 7860
+pinned: false
+short_description: 《控訴》線上 1 對 1 卡牌對戰（手機網頁）
+---
+
 # 控訴 Online（v1：白狐神社／鴉教團）
 
 手機優先的《控訴》線上 1 對 1 對戰。Node 權威伺服器保存完整遊戲狀態，手牌與牌庫不會傳給對手的瀏覽器。
