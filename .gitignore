@@ -12,3 +12,4 @@ cf/node_modules/
 .wrangler/
 cf/.wrangler/
 dist/
+data/

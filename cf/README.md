@@ -1,6 +1,7 @@
 # Cloudflare 版（Workers + Durable Objects）
 
-- `src/worker.js`：Worker 入口＋`Room` Durable Object（每個房間一個 DO，SQLite 後端，WebSocket Hibernation）。
+- `src/worker.js`：Worker 入口＋`Room` Durable Object（每個房間一個 DO，SQLite 後端，WebSocket Hibernation）＋`PublicDecks` Durable Object（全域單一實例，SQLite 儲存公開牌組，`/api/decks*`）。
+- Migrations：`v1` 新增 `Room`，`v2` 新增 `PublicDecks`。`scripts/api-payload.js` 對已部署的 Worker 會套用 v1→v2，若已是 v2 則自動不帶 migration 重試。
 - 規則引擎直接沿用 `../engine/*.js`（CommonJS，由 wrangler/esbuild 打包），不需修改。
 - 房間狀態以「亂數種子＋玩家決定的事件紀錄」存在 DO storage；DO 被逐出或重新部署後，會重播事件重建對局（`test/replay.test.js` 驗證可決定性重播）。房間 12 小時無動作後以 alarm 清除。
 - 隱藏資訊仍只在伺服器端（每位玩家只收到自己的 `view`）。單人 AI 在 DO 內執行。

@@ -8,7 +8,8 @@ const TAG = DECK === 'preset-cro01' ? '' : '-' + DECK.replace('preset-', '');
 (async () => {
   const browser = await chromium.launch();
   const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
-  const page = await ctx.newPage();
+  await ctx.addInitScript(() => { try { localStorage.setItem('accusation.tutorialDone', '1'); } catch {} });
+    const page = await ctx.newPage();
   const errors = [];
   page.on('pageerror', e => errors.push(e.message));
   page.on('dialog', d => d.accept());

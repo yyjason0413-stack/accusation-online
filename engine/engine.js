@@ -923,6 +923,8 @@ class Game {
         cannotAttack: pl.cannotAttackTurn >= this.turnNo, autoSkipCounter: pl.autoSkipCounter,
       };
       if (p === me) { o.hand = pl.hand.map(cv); o.under = pl.under.map(c => Object.assign(cv(c), { underOf: c.underOf })); }
+      // 介面提示用：目前可參與襲擊／聖戰的信徒（唯讀，不影響規則）
+      if (p === me && this.active === me) { try { o.attackers = [...new Set([...this.attackers(p), ...this.attackers(p, true)].map(c => c.uid))]; } catch { o.attackers = []; } }
       return o;
     };
     const v = {

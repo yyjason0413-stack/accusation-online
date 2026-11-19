@@ -124,6 +124,7 @@ function onMsg(m) {
       view = m.view;
       const seq = view && view.choice && view.choice.seq;
       if (seq !== prevSeq) { ui.sel = []; ui.sheetMin = false; }
+      if (seq !== prevSeq) applyIntent();
       if (!view || !view.choice || view.choice.seq !== ui.busy) { ui.busy = null; document.body.classList.remove('busy'); }
       ui.screen = room.status === 'waiting' ? 'waiting' : 'game';
       render();
@@ -187,18 +188,99 @@ function waiting() {
   };
   document.getElementById('leave').onclick = leave;
 }
+// ---------- 公開牌組 ----------
+const PUBTOK = 'accusation.pubTokens', AUTHTOK = 'accusation.authorToken';
+function authorToken() {
+  let t = localStorage.getItem(AUTHTOK);
+  if (!/^[0-9a-f]{32}$/.test(t || '')) { const a = new Uint8Array(16); crypto.getRandomValues(a); t = [...a].map(x => x.toString(16).padStart(2, '0')).join(''); localStorage.setItem(AUTHTOK, t); }
+  return t;
+}
+function pubTokens() { try { return JSON.parse(localStorage.getItem(PUBTOK) || '{}'); } catch { return {}; } }
+async function api(method, path, body, headers = {}) {
+  const r = await fetch(path, { method, headers: { 'content-type': 'application/json', ...headers }, body: body ? JSON.stringify(body) : undefined });
+  let j = {}; try { j = await r.json(); } catch {}
+  if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+  return j;
+}
+function publishForm(cards, name) {
+  const v = validate(cards); if (!v.ok) return toast('牌組不合法，無法公開');
+  showModal(`<div class="ztitle">儲存為公開牌組</div><div class="sub" style="text-align:left">公開後所有玩家都能檢視與使用這副牌組。只有這台裝置可以刪除它。</div>
+    <label>牌組名稱（最多 20 字）</label><input id="pbName" maxlength="20" value="${esc(name || '')}">
+    <label>作者暱稱（最多 12 字）</label><input id="pbAuthor" maxlength="12" value="${esc(localStorage.getItem('accusation.pubAuthor') || ui.name || '')}">
+    <label>說明（選填，最多 200 字）</label><textarea id="pbDesc" maxlength="200" rows="3" placeholder="打法、核心組合…"></textarea>
+    <div class="acts"><button class="primary" id="pbGo">公開</button><button class="ghost" data-close>取消</button></div>`);
+  document.getElementById('pbGo').onclick = async ev => {
+    const b = ev.target; const n = document.getElementById('pbName').value.trim(), a = document.getElementById('pbAuthor').value.trim(), ds = document.getElementById('pbDesc').value.trim();
+    if (!n || !a) return toast('請填寫名稱與作者暱稱');
+    b.disabled = true;
+    try {
+      const r = await api('POST', '/api/decks', { name: n, author: a, desc: ds, cards, authorToken: authorToken() });
+      const t = pubTokens(); t[r.deck.id] = r.editToken; localStorage.setItem(PUBTOK, JSON.stringify(t));
+      localStorage.setItem('accusation.pubAuthor', a);
+      hideModal(); toast('已公開！'); ui.pub = { ...(ui.pub || {}), sort: 'new' }; ui.screen = 'pub'; render();
+    } catch (e) { b.disabled = false; toast('公開失敗：' + e.message, 3600); }
+  };
+}
+function pubScreen() {
+  const P = ui.pub = ui.pub || { faction: '', sort: 'new' };
+  const facs = [...new Set(CARD_LIST.filter(c => c.type === '教主' && c.auto).map(c => c.faction))];
+  $app.innerHTML = `<div class="lobby"><div class="row"><button id="back">‹ 返回</button><h1 style="flex:1;font-size:22px;letter-spacing:3px">公開牌組</h1></div>
+    <div class="row" style="gap:8px"><select id="pfFac" class="sel"><option value="">全部教團</option>${facs.map(f => `<option ${P.faction === f ? 'selected' : ''}>${esc(f)}</option>`).join('')}</select>
+      <select id="pfSort" class="sel"><option value="new" ${P.sort === 'new' ? 'selected' : ''}>最新</option><option value="used" ${P.sort === 'used' ? 'selected' : ''}>最多人使用</option></select></div>
+    <div id="pubList"><div class="sub">載入中…</div></div></div>`;
+  document.getElementById('back').onclick = () => { ui.screen = 'decks'; render(); };
+  document.getElementById('pfFac').onchange = e => { P.faction = e.target.value; render(); };
+  document.getElementById('pfSort').onchange = e => { P.sort = e.target.value; render(); };
+  const q = new URLSearchParams({ sort: P.sort }); if (P.faction) q.set('faction', P.faction);
+  const my = pubTokens();
+  api('GET', '/api/decks?' + q).then(r => {
+    const box = document.getElementById('pubList'); if (!box || ui.screen !== 'pub') return;
+    P.cache = Object.fromEntries(r.decks.map(d => [d.id, d]));
+    box.innerHTML = r.decks.length ? r.decks.map(d => `<div class="deckpick pubdeck" data-pid="${esc(d.id)}"><img src="${img(d.leader)}"><div style="flex:1;min-width:0"><div style="font-weight:700">${esc(d.name)}${my[d.id] ? ' <span class="pill ok">我的</span>' : ''}</div>
+      <div class="sub" style="text-align:left">${esc(d.faction)}${d.secondary ? ' ＋ ' + esc(d.secondary) : ''} · ${esc(d.author)} · 使用 ${d.uses} 次 · ${new Date(d.created).toLocaleDateString('zh-TW')}</div>
+      ${d.desc ? `<div class="pdesc">${esc(d.desc)}</div>` : ''}</div></div>`).join('') : '<div class="sub">還沒有公開牌組。到「牌組」裡把你組好的牌組公開吧！</div>';
+    box.querySelectorAll('[data-pid]').forEach(el => el.onclick = () => pubDetail(P.cache[el.dataset.pid]));
+  }).catch(e => { const box = document.getElementById('pubList'); if (box) box.innerHTML = `<div class="errline">無法載入：${esc(e.message)}</div>`; });
+}
+function sortCards(ids) { const ord = { 教主: 0, 儀式: 1 }; return ids.slice().sort((a, b) => (ord[(CARDS[a] || {}).type] ?? 2) - (ord[(CARDS[b] || {}).type] ?? 2) || ((CARDS[a] || {}).faction || '').localeCompare((CARDS[b] || {}).faction || '') || a.localeCompare(b)); }
+function pubDetail(d) {
+  if (!d) return;
+  const tok = pubTokens()[d.id];
+  showModal(`<div class="ztitle">${esc(d.name)}</div><div class="sub" style="text-align:left">${esc(d.faction)}${d.secondary ? ' ＋ ' + esc(d.secondary) : ''} · 作者 ${esc(d.author)} · 使用 ${d.uses} 次</div>
+    ${d.desc ? `<div class="pdesc full">${esc(d.desc)}</div>` : ''}
+    <div class="grid pubgrid">${sortCards(d.cards).map(id => `<div class="c bc" data-zoomid="${id}"><img src="${img(id)}" loading="lazy" alt="${esc((CARDS[id] || {}).name || id)}"></div>`).join('')}</div>
+    <div class="acts"><button class="primary" id="pdUse">使用這副牌組</button><button id="pdCopy">複製到我的牌組編輯</button>${tok ? '<button class="danger" id="pdDel">刪除（我公開的）</button>' : ''}<button class="ghost" data-close>關閉</button></div>`);
+  $modal.querySelectorAll('[data-zoomid]').forEach(el => el.onclick = () => { const id = el.dataset.zoomid; openCard(null, id); });
+  document.getElementById('pdUse').onclick = () => {
+    const ds = userDecks(); const id = 'pub-' + d.id; const deck = { id, name: d.name, cards: d.cards.slice(), pub: d.id };
+    const i = ds.findIndex(x => x.id === id); if (i >= 0) ds[i] = deck; else ds.push(deck);
+    saveUserDecks(ds); localStorage.setItem(DKSEL, id);
+    api('POST', `/api/decks/${encodeURIComponent(d.id)}/use`).catch(() => {});
+    hideModal(); toast(`已選用「${d.name}」`); ui.screen = room ? (room.status === 'waiting' ? 'waiting' : 'game') : 'lobby'; render();
+  };
+  document.getElementById('pdCopy').onclick = () => { hideModal(); ui.edit = { id: 'u' + Date.now(), name: d.name.slice(0, 14) + ' 改', cards: d.cards.slice(), tab: 'primary' }; ui.screen = 'edit'; render(); };
+  const del = document.getElementById('pdDel');
+  if (del) del.onclick = async () => {
+    if (!confirm('確定要刪除這副公開牌組？')) return;
+    try { await api('DELETE', `/api/decks/${encodeURIComponent(d.id)}`, null, { 'x-edit-token': tok }); const t = pubTokens(); delete t[d.id]; localStorage.setItem(PUBTOK, JSON.stringify(t)); hideModal(); toast('已刪除'); render(); }
+    catch (e) { toast('刪除失敗：' + e.message); }
+  };
+}
 function decksScreen() {
   const sel = selectedDeck();
   $app.innerHTML = `<div class="lobby"><div class="row"><button id="back">‹ 返回</button><h1 style="flex:1;font-size:22px;letter-spacing:3px">牌組</h1><button class="primary" id="newDeck">＋ 新牌組</button></div>
+    <button id="pubBrowse">🌐 瀏覽公開牌組</button>
     ${allDecks().map(d => { const v = validate(d.cards); const L = d.cards.find(id => (CARDS[id] || {}).type === '教主');
       return `<div class="deckpick ${sel && sel.id === d.id ? 'on' : ''}">${L ? `<img src="${img(L)}">` : '<div class="back"></div>'}<div style="flex:1"><div style="font-weight:700">${esc(d.name)}</div>
       <div class="sub" style="text-align:left">${v.ok ? `${esc(v.faction)}${v.secondary ? ' ＋ ' + esc(v.secondary) : ''}` : `<span style="color:#e08a7a">不合法：${esc(v.errors[0] || '')}</span>`}</div>
       <div class="row" style="margin-top:6px;flex-wrap:wrap">${v.ok ? `<button class="primary" data-use="${esc(d.id)}">${sel && sel.id === d.id ? '使用中' : '使用'}</button>` : ''}
-      ${d.preset ? `<button data-copy="${esc(d.id)}">複製來編輯</button>` : `<button data-edit="${esc(d.id)}">編輯</button><button class="danger" data-del="${esc(d.id)}">刪除</button>`}</div></div></div>`; }).join('')}
+      ${v.ok && !d.preset && !d.pub ? `<button data-pub="${esc(d.id)}">公開</button>` : ''}${d.preset ? `<button data-copy="${esc(d.id)}">複製來編輯</button>` : `<button data-edit="${esc(d.id)}">編輯</button><button class="danger" data-del="${esc(d.id)}">刪除</button>`}</div></div></div>`; }).join('')}
     <div class="sub">組牌規則：教主＋固定 3 張儀式，再加 20 張：至少 12 張與教主同教團；其餘至多 8 張，可來自另一個教團（限 1 個）與任意張放逐者。也可以 20 張全用主教團。每張限 1 張。</div></div>`;
   document.getElementById('back').onclick = () => { ui.screen = room ? (room.status === 'waiting' ? 'waiting' : 'game') : 'lobby'; render(); };
   document.getElementById('newDeck').onclick = () => { ui.edit = { id: 'u' + Date.now(), name: '我的牌組', cards: [], tab: 'primary' }; ui.screen = 'edit'; render(); };
   $app.querySelectorAll('[data-use]').forEach(b => b.onclick = () => { localStorage.setItem(DKSEL, b.dataset.use); ui.screen = 'lobby'; render(); });
+  document.getElementById('pubBrowse').onclick = () => { ui.screen = 'pub'; render(); };
+  $app.querySelectorAll('[data-pub]').forEach(b => b.onclick = () => { const d = userDecks().find(x => x.id === b.dataset.pub); if (d) publishForm(d.cards, d.name); });
   $app.querySelectorAll('[data-copy]').forEach(b => b.onclick = () => { const d = allDecks().find(x => x.id === b.dataset.copy); ui.edit = { id: 'u' + Date.now(), name: d.name.replace('（預設）', '') + ' 改', cards: d.cards.slice(), tab: 'primary' }; ui.screen = 'edit'; render(); });
   $app.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => { const d = userDecks().find(x => x.id === b.dataset.edit); ui.edit = { id: d.id, name: d.name, cards: d.cards.slice(), tab: 'primary' }; ui.screen = 'edit'; render(); });
   $app.querySelectorAll('[data-del]').forEach(b => b.onclick = () => { if (confirm('刪除這個牌組？')) { saveUserDecks(userDecks().filter(x => x.id !== b.dataset.del)); render(); } });
@@ -218,7 +300,7 @@ function editScreen() {
   $app.innerHTML = `<div class="builder">
     <div class="bhead"><div class="row"><button id="cancel">‹</button><input id="dname" value="${esc(e.name)}" maxlength="16"><button class="primary" id="save">儲存</button></div>
       <div class="row bstat"><span class="pill ${e.cards.length === 24 ? 'ok' : ''}">總數 ${e.cards.length}/24</span><span class="pill ${(v.primaryCount || 0) >= 12 ? 'ok' : ''}">主教團 ${v.primaryCount || 0}（≥12）</span><span class="pill ${mainN - (v.primaryCount || 0) <= 8 ? 'ok' : ''}">其他 ${Math.max(0, mainN - (v.primaryCount || 0))}（≤8）</span><span class="pill">另一教團：${esc(v.secondary || '—')}</span><span class="pill">牌庫主牌 ${mainN}/20</span></div>
-      ${v.ok ? '<div class="okline">✓ 牌組合法，可以使用</div>' : `<div class="errline">${v.errors.map(esc).join('<br>')}</div>`}</div>
+      ${v.ok ? '<div class="okline">✓ 牌組合法，可以使用 <button id="publish" class="mini">儲存為公開牌組</button></div>' : `<div class="errline">${v.errors.map(esc).join('<br>')}</div>`}</div>
     <div class="bbody">
       <div class="zone-label">1. 選擇教主（自動帶入固定 3 張儀式）</div>
       <div class="grid">${leaders.map(c => `<div class="c bc ${leaderId === c.id ? 'chosen' : ''}" data-leader="${c.id}"><img src="${img(c.id)}"><span class="badge b-st">${esc(c.faction)}</span><span class="zi" data-zoomid="${c.id}">ⓘ</span></div>`).join('')}</div>
@@ -231,6 +313,7 @@ function editScreen() {
   const q = s => document.getElementById(s);
   q('dname').oninput = ev => { e.name = ev.target.value; };
   q('cancel').onclick = () => { ui.screen = 'decks'; render(); };
+  if (q('publish')) q('publish').onclick = () => { q('save').onclick(); publishForm(e.cards.slice(), e.name.trim()); };
   q('save').onclick = () => {
     const ds = userDecks(); const i = ds.findIndex(d => d.id === e.id);
     const d = { id: e.id, name: e.name.trim() || '我的牌組', cards: e.cards.slice() };
@@ -284,7 +367,9 @@ function cardEl(c, opts = {}) {
   if (c.restrained) badges += `<span class="badge b-guilty">拘束</span>`;
   if (c.offering) badges += `<span class="badge b-off">供品</span>`;
   if (c.suppressed) badges += `<span class="badge b-guilty">失去能力</span>`;
-  return `<div class="${cls}" data-uid="${c.uid}" data-id="${c.id}"><img src="${img(c.id)}" alt="${esc(d.name)}" loading="lazy">${badges}</div>`;
+  const ty = c.asType || d.type;
+  if (opts.canatk && ty === '信徒' && (!opts.atkers || opts.atkers.includes(c.uid))) cls += ' canatk';
+  return `<div class="${cls}" data-uid="${c.uid}" data-id="${c.id}" data-ty="${esc(ty)}"><img src="${img(c.id)}" alt="${esc(d.name)}" loading="lazy">${badges}</div>`;
 }
 const TYPES = id => (CARDS[id] || {}).type;
 function symHtml(s) { return `<span class="syms">${Object.entries(s || {}).map(([k, v]) => `<span class="sym ${k}">${k}${v}</span>`).join('')}</span>`; }
@@ -308,7 +393,7 @@ function sideHtml(p, mine) {
   const am = mine ? actionMap() : {}, ps = pickSet();
   const all = p.field;
   const locName = uid => { const l = all.find(x => x.uid === uid); return l ? (CARDS[l.id] || {}).name : ''; };
-  const ce = c => cardEl(c, { act: !!am[c.uid] && !attackSet().has(c.uid), atk: attackSet().has(c.uid), selable: ps[c.uid] != null && !ui.sel.includes(ps[c.uid]), chosen: ps[c.uid] != null && ui.sel.includes(ps[c.uid]), locName: locName(c.guardAt) });
+  const ce = c => cardEl(c, { canatk: mine && attackSet().size > 0, atkers: mine && p.attackers, act: !!am[c.uid] && !attackSet().has(c.uid), atk: attackSet().has(c.uid), selable: ps[c.uid] != null && !ui.sel.includes(ps[c.uid]), chosen: ps[c.uid] != null && ui.sel.includes(ps[c.uid]), locName: locName(c.guardAt) });
   // 敵方地點也可能是可選/可襲擊
   const amAll = actionMap();
   const atkSet = attackSet();
@@ -350,6 +435,87 @@ function statusText() {
   }
   return '';
 }
+// ---------- 音效（WebAudio 即時合成，無外部音檔）----------
+const SFX = (() => {
+  let ctx = null, master = null;
+  const muted = () => localStorage.getItem('accusation.mute') === '1';
+  const vol = () => { const v = Number(localStorage.getItem('accusation.vol')); return Number.isFinite(v) && localStorage.getItem('accusation.vol') != null ? Math.min(1, Math.max(0, v)) : 0.6; };
+  function unlock() {
+    try {
+      if (!ctx) { const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return; ctx = new AC(); master = ctx.createGain(); master.connect(ctx.destination); }
+      if (ctx.state === 'suspended') ctx.resume();
+    } catch {}
+  }
+  function env(g, t, a, d, peak) { g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(peak, t + a); g.gain.exponentialRampToValueAtTime(0.0001, t + a + d); }
+  function tone(f, t, dur, type = 'sine', peak = 0.3, f2 = null, a = 0.005) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type; o.frequency.setValueAtTime(f, t); if (f2) o.frequency.exponentialRampToValueAtTime(f2, t + dur);
+    env(g, t, a, dur, peak); o.connect(g); g.connect(master); o.start(t); o.stop(t + a + dur + 0.05);
+  }
+  let nbuf = null;
+  function noise(t, dur, peak = 0.3, freq = 1200, ftype = 'lowpass', f2 = null) {
+    if (!nbuf) { nbuf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate); const d = nbuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1; }
+    const s = ctx.createBufferSource(), f = ctx.createBiquadFilter(), g = ctx.createGain();
+    s.buffer = nbuf; f.type = ftype; f.frequency.setValueAtTime(freq, t); if (f2) f.frequency.exponentialRampToValueAtTime(f2, t + dur);
+    env(g, t, 0.004, dur, peak); s.connect(f); f.connect(g); g.connect(master); s.start(t); s.stop(t + dur + 0.05);
+  }
+  const N = { C5: 523.25, E5: 659.25, G5: 783.99, C6: 1046.5, A4: 440, D5: 587.33, F4: 349.23, Ab4: 415.3, Eb4: 311.13, C4: 261.63, G4: 392 };
+  const S = {
+    tap: t => tone(1400, t, 0.03, 'triangle', 0.12),
+    draw: t => { noise(t, 0.12, 0.18, 2500, 'highpass', 6000); tone(900, t + 0.02, 0.05, 'sine', 0.05, 1300); },
+    play: t => { tone(170, t, 0.16, 'sine', 0.45, 60); noise(t, 0.08, 0.15, 900); },
+    stamp: t => { tone(95, t, 0.35, 'sine', 0.6, 45); noise(t, 0.18, 0.35, 700); tone(220, t + 0.01, 0.12, 'square', 0.08, 110); },
+    hit: t => { noise(t, 0.14, 0.4, 1800, 'lowpass', 300); tone(240, t, 0.15, 'square', 0.12, 70); },
+    destroy: t => { noise(t, 0.45, 0.25, 3000, 'lowpass', 150); tone(300, t, 0.4, 'sawtooth', 0.05, 60); },
+    ritual: t => [N.C5, N.E5, N.G5, N.C6].forEach((f, i) => { tone(f, t + i * 0.09, 0.5, 'triangle', 0.16); tone(f * 2, t + i * 0.09, 0.25, 'sine', 0.04); }),
+    turn: t => { tone(N.G4, t, 0.25, 'triangle', 0.15); tone(N.C5, t + 0.12, 0.4, 'triangle', 0.17); },
+    win: t => [N.C5, N.E5, N.G5, N.C6, N.G5, N.C6].forEach((f, i) => tone(f, t + i * 0.11, i > 3 ? 0.6 : 0.2, 'triangle', 0.18)),
+    lose: t => [N.G4, N.Eb4, N.C4].forEach((f, i) => tone(f, t + i * 0.22, 0.45, 'sine', 0.2, f * 0.97)),
+    counter: t => { tone(N.A4, t, 0.12, 'square', 0.06); tone(N.A4, t + 0.16, 0.12, 'square', 0.06); },
+  };
+  let lastAt = {};
+  function play(name) {
+    if (muted() || !ctx || ctx.state !== 'running' || !S[name]) return;
+    const now = ctx.currentTime;
+    if (lastAt[name] && now - lastAt[name] < 0.06) return; // 避免同時疊太多
+    lastAt[name] = now;
+    master.gain.setValueAtTime(vol(), now);
+    try { S[name](now + 0.01); } catch {}
+  }
+  ['pointerdown', 'keydown', 'touchstart'].forEach(ev => window.addEventListener(ev, unlock, { capture: true, passive: true }));
+  return { play, unlock, muted, vol };
+})();
+document.addEventListener('click', e => { const b = e.target.closest && e.target.closest('button,.opt,select,[data-zone]'); if (b) SFX.play('tap'); }, true);
+// ---------- 新手教學（只顯示一次，可從選單重看）----------
+const TUT_KEY = 'accusation.tutorialDone';
+const TUT_STEPS = [
+  { sel: '.hand', title: '拖曳出牌', text: '發金光的手牌可以打出：按住往上拖到場上放開即可。拖到場上的某張卡上，會直接把它當作效果目標。點一下手牌開啟動作選單；長按約半秒可放大看完整效果。' },
+  { sel: '.board', title: '高亮顏色', text: '金色＝可以執行行動的卡。紅色⚔＝可以襲擊的目標：把自己的信徒拖到紅框上就能襲擊，之後可再加入其他信徒一起襲擊。藍色＝目前可以選擇的目標。' },
+  { sel: '.mid', title: '控訴時機', text: '對手執行災厄效果（詠頌、魔法、地點行動、儀式）時，畫面下方會出現紅色「⚖ 控訴時機」提示，你可以展示手牌控訴它。' },
+  { sel: '#endBtn', alt: '.mid', title: '結束回合', text: '行動用完或不想再行動時，按「結束回合」。行動用完時這個按鈕會閃爍提醒。' },
+  { sel: '#menuBtn', title: '⋯ 選單', text: '這裡可以調整動畫速度、音效（靜音／音量）、震動、自動跳過控訴，也可以重看這份教學或投降。' },
+];
+let tutStep = -1;
+const tutReady = () => ui.screen === 'game' && view && view.winner == null && (!view.choice || view.choice.type === 'action') && !document.querySelector('.sheet [data-pick], .sheet [data-ask]') && !drag;
+function maybeTutorial() { if (localStorage.getItem(TUT_KEY) !== '1' && tutStep < 0 && tutReady()) setTimeout(() => { if (tutStep < 0 && localStorage.getItem(TUT_KEY) !== '1' && tutReady()) startTutorial(); }, 500); }
+function startTutorial() { hideModal(); tutStep = 0; drawTutorial(); }
+function endTutorial() { tutStep = -1; localStorage.setItem(TUT_KEY, '1'); const t = document.getElementById('tut'); if (t) t.remove(); }
+function drawTutorial() {
+  let t = document.getElementById('tut'); if (!t) { t = document.createElement('div'); t.id = 'tut'; document.body.appendChild(t); }
+  const st = TUT_STEPS[tutStep]; if (!st) return endTutorial();
+  const el = document.querySelector(st.sel) || (st.alt && document.querySelector(st.alt));
+  const r = el ? el.getBoundingClientRect() : { left: 20, top: 200, width: window.innerWidth - 40, height: 80 };
+  const pad = 6, top = Math.max(4, r.top - pad), left = Math.max(4, r.left - pad), w = Math.min(window.innerWidth - left - 4, r.width + pad * 2), h = r.height + pad * 2;
+  const below = top + h / 2 < window.innerHeight / 2;
+  t.innerHTML = `<div class="tut-hole" style="left:${left}px;top:${top}px;width:${w}px;height:${h}px"></div>
+    <div class="tut-box" style="${below ? `top:${Math.min(window.innerHeight - 220, top + h + 12)}px` : `bottom:${Math.max(12, window.innerHeight - top + 12)}px`}">
+      <div class="tut-step">${tutStep + 1} / ${TUT_STEPS.length}</div><div class="tut-title">${esc(st.title)}</div><div class="tut-text">${esc(st.text)}</div>
+      <div class="row"><button class="ghost" id="tutSkip">略過教學</button><span style="flex:1"></span>${tutStep > 0 ? '<button id="tutPrev">上一步</button>' : ''}<button class="primary" id="tutNext">${tutStep === TUT_STEPS.length - 1 ? '開始遊戲' : '下一步'}</button></div></div>`;
+  document.getElementById('tutSkip').onclick = endTutorial;
+  document.getElementById('tutNext').onclick = () => { tutStep++; if (tutStep >= TUT_STEPS.length) endTutorial(); else drawTutorial(); };
+  const pv = document.getElementById('tutPrev'); if (pv) pv.onclick = () => { tutStep--; drawTutorial(); };
+}
+window.addEventListener('resize', () => { if (tutStep >= 0) drawTutorial(); });
 // ---------- 設定：動畫／震動 ----------
 const reduceMotion = () => window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
 const animMode = () => localStorage.getItem('accusation.anim') || (reduceMotion() ? 'off' : 'normal');
@@ -359,10 +525,14 @@ function buzz(p) { if (hapticOn() && navigator.vibrate) try { navigator.vibrate(
 function settingsHtml(sfx) {
   const m = animMode();
   return `<label class="row setrow">動畫<select id="animSel${sfx}" class="sel mini">${[['normal', '正常'], ['fast', '快速'], ['off', '關閉']].map(([v, t]) => `<option value="${v}" ${m === v ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
-    <label class="row setrow"><input type="checkbox" id="haptic${sfx}" style="width:auto" ${hapticOn() ? 'checked' : ''}>震動回饋（支援的裝置）</label>`;
+    <label class="row setrow"><input type="checkbox" id="haptic${sfx}" style="width:auto" ${hapticOn() ? 'checked' : ''}>震動回饋（支援的裝置）</label>
+    <label class="row setrow"><input type="checkbox" id="mute${sfx}" style="width:auto" ${SFX.muted() ? 'checked' : ''}>靜音</label>
+    <label class="row setrow">音量<input type="range" id="vol${sfx}" min="0" max="100" step="5" value="${Math.round(SFX.vol() * 100)}" class="vol"></label>`;
 }
 function bindSettings(sfx) {
   const a = document.getElementById('animSel' + sfx); if (a) a.onchange = () => { localStorage.setItem('accusation.anim', a.value); toast(a.value === 'off' ? '已關閉動畫' : '動畫：' + a.options[a.selectedIndex].text); };
+  const mu = document.getElementById('mute' + sfx); if (mu) mu.onchange = () => { localStorage.setItem('accusation.mute', mu.checked ? '1' : '0'); if (!mu.checked) { SFX.unlock(); setTimeout(() => SFX.play('turn'), 50); } };
+  const vo = document.getElementById('vol' + sfx); if (vo) vo.onchange = () => { localStorage.setItem('accusation.vol', String(Number(vo.value) / 100)); SFX.unlock(); setTimeout(() => SFX.play('play'), 50); };
   const h = document.getElementById('haptic' + sfx); if (h) h.onchange = () => { localStorage.setItem('accusation.haptic', h.checked ? '1' : '0'); if (h.checked) buzz(20); };
 }
 
@@ -416,8 +586,10 @@ function game() {
   const nb = $app.querySelector('.board');
   if (nb && scrollTop != null) nb.scrollTop = scrollTop;
   bindGame();
+  try { sfxFx(prevSeat === seat ? prevView : null, view); } catch (e) { console.warn('sfx', e); }
   try { runFx(prevSeat === seat ? prevView : null, view, snapshot); } catch (e) { console.warn('fx', e); }
   prevView = view; prevSeat = seat;
+  maybeTutorial();
 }
 function playIdx(uid) {
   const ch = view && view.choice;
@@ -489,6 +661,29 @@ function popNum(r, text, cls = '') {
   const e = document.createElement('div'); e.className = 'pop ' + cls; e.textContent = text;
   const c = center(r); e.style.left = c.x + 'px'; e.style.top = c.y + 'px'; e.style.setProperty('--d', Math.round(600 * k) + 'ms');
   document.body.appendChild(e); setTimeout(() => e.remove(), 650 * k + 50);
+}
+function sfxFx(pv, v) {
+  if (!pv || v.turnNo < pv.turnNo) return;
+  const q = []; const at = (ms, n) => q.push([ms, n]);
+  const pm = zoneMap(pv), nm = zoneMap(v);
+  let draw = 0, play = 0, destroy = 0;
+  for (const [uid, now] of nm) { const was = pm.get(uid);
+    if (now.z === 'hand' && now.p === seat && !was) draw++;
+    if (now.z === 'field' && (!was || was.z !== 'field')) play++; }
+  for (const [uid, was] of pm) { const now = nm.get(uid); if (was.z === 'field' && (!now || now.z !== 'field')) destroy++; }
+  const lastN = (pv.log.slice(-1)[0] || {}).n ?? -1;
+  let t = 0;
+  for (const l of v.log.filter(l => l.n > lastN)) {
+    if (/^⚖/.test(l.text)) at(t, 'stamp'), t += 250;
+    else if (/^⚔/.test(l.text)) at(t + 250, 'hit'), t += 300;
+    else if (/^★/.test(l.text)) at(t, 'ritual'), t += 400;
+    else if (/^——/.test(l.text) && v.active === seat) at(t + 150, 'turn');
+  }
+  if (play) at(0, 'play');
+  if (draw) at(80, 'draw');
+  if (destroy) at(t + 300, 'destroy');
+  if (v.winner != null && pv.winner == null) at(t + 500, v.winner === seat ? 'win' : 'lose');
+  for (const [ms, n] of q) setTimeout(() => SFX.play(n), ms);
 }
 function runFx(pv, v, snapshot) {
   const k = animK();
@@ -626,7 +821,10 @@ function bindCardGestures(el) {
     if (!drag && !peekEl && Math.hypot(dx, dy) > 9) {
       clearTimeout(timer);
       const pi = playIdx(uid);
-      if (inHand && pi >= 0 && !document.body.classList.contains('busy')) startDrag(el, e, pi);
+      const busy = document.body.classList.contains('busy');
+      const canAtk = !inHand && el.classList.contains('canatk') && attackSet().size > 0;
+      if (inHand && pi >= 0 && !busy) startDrag(el, e, { mode: 'play', pi });
+      else if (canAtk && !busy) startDrag(el, e, { mode: 'attack' });
       else return release();
     }
     if (drag && drag.el === el) { e.preventDefault(); moveDrag(e); }
@@ -656,34 +854,84 @@ function bindCardGestures(el) {
     openCard(uid, id);
   });
 }
-function startDrag(el, e, pi) {
+function startDrag(el, e, opt) {
   const r = el.getBoundingClientRect();
-  const g = document.createElement('div'); g.className = 'dragghost';
+  const g = document.createElement('div'); g.className = 'dragghost' + (opt.mode === 'attack' ? ' atkghost' : '');
   g.innerHTML = el.innerHTML;
-  Object.assign(g.style, { width: r.width + 'px', height: r.height + 'px', left: '0px', top: '0px' });
+  const sc = opt.mode === 'attack' ? 0.85 : 1;
+  Object.assign(g.style, { width: r.width * sc + 'px', height: r.height * sc + 'px', left: '0px', top: '0px' });
   document.body.appendChild(g);
-  drag = { el, g, pi, r, ox: e.clientX - r.left, oy: e.clientY - r.top, over: false };
-  el.classList.add('dragging'); document.body.classList.add('dragmode'); buzz(10);
+  drag = { el, g, pi: opt.pi, mode: opt.mode, uid: Number(el.dataset.uid), r, ox: (e.clientX - r.left) * sc, oy: (e.clientY - r.top) * sc, over: false, hover: null };
+  el.classList.add('dragging'); document.body.classList.add('dragmode', opt.mode === 'attack' ? 'atkdrag' : 'playdrag'); buzz(10); SFX.play('draw');
   moveDrag(e);
 }
-function dropOk(e) { const h = $app.querySelector('.hand'); return h && e.clientY < h.getBoundingClientRect().top - 12; }
+function hoverCard(e) {
+  const t = document.elementFromPoint(e.clientX, e.clientY);
+  const c = t && t.closest && t.closest('.board .c[data-uid]');
+  return c && c !== (drag && drag.el) ? c : null;
+}
+function dropOk(e) {
+  if (drag && drag.mode === 'attack') { const h = hoverCard(e); return !!(h && h.classList.contains('atk')); }
+  const h = $app.querySelector('.hand'); return h && e.clientY < h.getBoundingClientRect().top - 12;
+}
 function moveDrag(e) {
   const d = drag; if (!d) return;
   const x = e.clientX - d.ox, y = e.clientY - d.oy;
   const over = dropOk(e);
-  d.g.style.transform = `translate(${x}px,${y}px) scale(${over ? 1.2 : 1.1}) rotate(${over ? 0 : -4}deg)`;
+  const hc = hoverCard(e);
+  const hv = d.mode === 'attack' ? (hc && hc.classList.contains('atk') ? hc : null) : (over ? hc : null);
+  if (hv !== d.hover) { if (d.hover) d.hover.classList.remove('droptarget'); d.hover = hv; if (hv) { hv.classList.add('droptarget'); buzz(6); } }
+  d.g.style.transform = `translate(${x}px,${y}px) scale(${over ? (hv ? 1.05 : 1.2) : 1.1}) rotate(${over ? 0 : -4}deg)`;
   if (over !== d.over) { d.over = over; document.body.classList.toggle('dropover', over); if (over) buzz(6); }
+  const dz = $app.querySelector('.dropzone'); if (dz) dz.textContent = d.mode === 'attack' ? (hv ? '放開以襲擊' : '拖到紅框目標上襲擊') : (hv ? `放開打出 · 指定《${esc(nameOf(hv.dataset.id) || '')}》（若效果需要目標）` : '放開以打出');
 }
+const intentLog = window.__intentLog = [];
 function endDrag(e) {
   const d = drag; if (!d) return;
-  if (dropOk(e)) {
-    const k = animK();
-    d.g.animate([{ opacity: 1 }, { opacity: 0, transform: d.g.style.transform + ' scale(1.15)' }], { duration: Math.max(1, 220 * k), fill: 'forwards' }).onfinish = () => d.g.remove();
-    setTimeout(() => d.g.remove(), 400);
-    finishDrag();
-    ui.lastPlayDrag = true;
+  if (!dropOk(e)) return cancelDrag();
+  const hv = d.hover;
+  const k = animK();
+  d.g.animate([{ opacity: 1 }, { opacity: 0, transform: d.g.style.transform + ' scale(1.15)' }], { duration: Math.max(1, 220 * k), fill: 'forwards' }).onfinish = () => d.g.remove();
+  setTimeout(() => d.g.remove(), 400);
+  finishDrag();
+  const ch = view && view.choice;
+  if (!ch) return;
+  if (d.mode === 'attack') {
+    const tu = Number(hv.dataset.uid);
+    let idx = ch.options.findIndex(o => o.uid === tu && o.kind === 'attack');
+    if (idx < 0) idx = ch.options.findIndex(o => o.uid === tu && o.kind === 'crusade');
+    if (idx < 0) return toast('這個目標目前無法襲擊');
+    ui.intent = { kind: 'attack', uid: d.uid, seq: ch.seq, t: Date.now() };
+    intentLog.push({ kind: 'attack', step: 'start', attacker: d.uid, target: tu });
+    answer([idx]);
+  } else {
+    ui.intent = hv ? { kind: 'target', uid: Number(hv.dataset.uid), seq: ch.seq, t: Date.now() } : null;
+    if (hv) intentLog.push({ kind: 'target', step: 'start', target: Number(hv.dataset.uid) });
     answer([d.pi]);
-  } else cancelDrag();
+  }
+}
+// 拖曳意圖：出牌後第一個「選擇目標」或襲擊後「選擇襲擊信徒」時自動帶入
+function applyIntent() {
+  const it = ui.intent; if (!it || !view) return;
+  const ch = view.choice;
+  if (Date.now() - it.t > 30000 || view.winner != null) { ui.intent = null; return; }
+  if (!ch || ch.seq === it.seq) return;
+  if (window.__intentDbg) intentLog.push({ kind: it.kind, step: 'seen', type: ch.type, prompt: ch.prompt, n: ch.options.length, uids: ch.options.map(o => o.uid) });
+  if (ch.type === 'pick') {
+    ui.intent = null;
+    const i = ch.options.findIndex(o => o.uid === it.uid);
+    if (i < 0) { intentLog.push({ kind: it.kind, step: 'invalid' }); if (it.kind === 'target') toast('拖曳的卡不是這個效果可選的目標，請在下方選擇'); return; }
+    ui.sel = [i];
+    if (it.kind === 'target') {
+      if (ch.max === 1 && pickOk(ch)) { intentLog.push({ kind: 'target', step: 'auto' }); setTimeout(() => { if (view && view.choice && view.choice.seq === ch.seq) answer([i]); }, 0); }
+      else intentLog.push({ kind: 'target', step: 'preselect' });
+    } else {
+      if (pickOk(ch) && ch.options.length === 1) { intentLog.push({ kind: 'attack', step: 'auto' }); setTimeout(() => { if (view && view.choice && view.choice.seq === ch.seq) answer([i]); }, 0); }
+      else { intentLog.push({ kind: 'attack', step: 'preselect' }); toast(pickOk(ch) ? '可以再加入其他信徒一起襲擊，按「確定」送出' : '聲量不足，請再加入其他信徒一起襲擊', 3200); }
+    }
+    return;
+  }
+  ui.intent = null;
 }
 function cancelDrag() {
   const d = drag; if (!d) return;
@@ -696,7 +944,8 @@ function cancelDrag() {
 function finishDrag() {
   const d = drag; drag = null;
   if (d) d.el.classList.remove('dragging');
-  document.body.classList.remove('dragmode', 'dropover');
+  if (d && d.hover) d.hover.classList.remove('droptarget');
+  document.body.classList.remove('dragmode', 'dropover', 'atkdrag', 'playdrag');
   if (renderPending) { renderPending = false; render(); }
 }
 function sheetHtml() {
@@ -835,12 +1084,13 @@ function openLog() {
 }
 function openMenu() {
   showModal(`<div class="ztitle">選單</div><div class="sub">房號 ${room ? room.code : ''} · ${room && room.mode === 'ai' ? '對戰 AI' : '線上對戰'}</div>
-    <div class="zeff" style="font-size:12.5px">玩法提示：金色發光的卡可以執行行動，手牌可直接拖曳到場上打出；點卡片查看效果與可用行動，長按可放大檢視。紅框（⚔）是可以襲擊的目標，藍框是目前可選擇的目標。罪惡信徒會橫置並變暗。</div>
+    <div class="zeff" style="font-size:12.5px">玩法提示：金色發光的卡可以執行行動，手牌可直接拖曳到場上打出（拖到某張卡上即指定為目標）；點卡片查看效果與可用行動，長按可放大檢視。紅框（⚔）是可以襲擊的目標，把自己的信徒拖到紅框上即可襲擊，藍框是目前可選擇的目標。罪惡信徒會橫置並變暗。</div>
     <label class="row" style="gap:8px"><input type="checkbox" id="autoSkip2" style="width:auto" ${autoSkip() ? 'checked' : ''}>沒有可控訴的卡時自動跳過</label>
     ${settingsHtml('2')}
-    <div class="acts"><button class="danger" id="concede">投降</button><button id="toLobby2">回大廳（可用連結回來）</button><button class="ghost" data-close>關閉</button></div>`);
+    <div class="acts"><button id="tutAgain">重看教學</button><button class="danger" id="concede">投降</button><button id="toLobby2">回大廳（可用連結回來）</button><button class="ghost" data-close>關閉</button></div>`);
   document.getElementById('autoSkip2').onchange = e => { localStorage.setItem('accusation.autoSkip', e.target.checked ? '1' : '0'); send({ t: 'option', autoSkip: e.target.checked }); toast(e.target.checked ? '已開啟自動跳過' : '已關閉自動跳過：每次災厄都會詢問你'); };
   bindSettings('2');
+  document.getElementById('tutAgain').onclick = () => { hideModal(); startTutorial(); };
   document.getElementById('concede').onclick = () => { if (confirm('確定投降？')) { send({ t: 'concede' }); hideModal(); } };
   document.getElementById('toLobby2').onclick = () => { hideModal(); ui.screen = 'lobby'; history.replaceState(null, '', '/'); params.delete('room'); view = null; room = null; render(); };
 }
@@ -848,6 +1098,7 @@ function render() {
   if (drag && ui.screen === 'game') { renderPending = true; return; }
   if (ui.screen === 'decks') return decksScreen();
   if (ui.screen === 'edit') return editScreen();
+  if (ui.screen === 'pub') return pubScreen();
   if (ui.screen === 'lobby' || !room) return lobby();
   if (ui.screen === 'waiting') return waiting();
   return game();

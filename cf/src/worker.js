@@ -3,6 +3,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import engine from '../../engine/engine.js';
 import bots from '../../engine/bots.js';
+import decksLib from '../../lib/decks.js';
 import INDEX_HTML from '../../public/index.html';
 import APP_JS from '../../public/app.js';
 import STYLE_CSS from '../../public/style.css';
@@ -27,6 +28,10 @@ export default {
     if (p === '/config.json') return new Response(JSON.stringify({ poll: false, host: 'cloudflare' }), { headers: JSON_H });
     if (p === '/cards.json') return new Response(cardsJson ||= JSON.stringify(DATA.map(c => Object.assign({ auto: isAutomated(c.id) }, c))), { headers: JSON_H });
     if (p === '/presets.json') return new Response(presetsJson ||= JSON.stringify(PRESET_DECKS), { headers: JSON_H });
+    if (p.startsWith('/api/decks')) {
+      const h = withHeaders(req, { 'x-client-ip': req.headers.get('cf-connecting-ip') || '' });
+      return env.DECKS.get(env.DECKS.idFromName('global')).fetch(new Request(req, { headers: h }));
+    }
     if (p === '/ws') {
       if (req.headers.get('Upgrade') !== 'websocket') return new Response('expected websocket', { status: 426 });
       const room = (url.searchParams.get('room') || '').toUpperCase();
@@ -249,5 +254,41 @@ export class Room extends DurableObject {
       this.record(['c', seat]); await this.save();
       return this.broadcast();
     }
+  }
+}
+
+// 公開牌組：單一 Durable Object（SQLite）
+export class PublicDecks extends DurableObject {
+  constructor(ctx, env) {
+    super(ctx, env);
+    this.sql = ctx.storage.sql;
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS decks (id TEXT PRIMARY KEY, faction TEXT, author TEXT, uses INTEGER DEFAULT 0, created INTEGER, data TEXT)`);
+    this.sql.exec(`CREATE INDEX IF NOT EXISTS decks_created ON decks(created)`);
+    const sql = this.sql;
+    const row = r => r ? Object.assign(JSON.parse(r.data), { uses: r.uses }) : null;
+    this.api = new decksLib.DeckApi({
+      list: ({ faction, sort, limit }) => {
+        const order = sort === 'used' ? 'uses DESC, created DESC' : 'created DESC';
+        const cur = faction ? sql.exec(`SELECT * FROM decks WHERE faction = ? ORDER BY ${order} LIMIT ?`, faction, limit) : sql.exec(`SELECT * FROM decks ORDER BY ${order} LIMIT ?`, limit);
+        return cur.toArray().map(row);
+      },
+      get: id => row(sql.exec('SELECT * FROM decks WHERE id = ?', id).toArray()[0]),
+      insert: r => { sql.exec('INSERT INTO decks (id, faction, author, uses, created, data) VALUES (?, ?, ?, ?, ?, ?)', r.id, r.faction, r.authorHash, r.uses || 0, r.created, JSON.stringify(r)); },
+      remove: id => { sql.exec('DELETE FROM decks WHERE id = ?', id); },
+      countByAuthor: h => sql.exec('SELECT COUNT(*) AS n FROM decks WHERE author = ?', h).one().n,
+      incUse: id => { sql.exec('UPDATE decks SET uses = uses + 1 WHERE id = ?', id); },
+      count: () => sql.exec('SELECT COUNT(*) AS n FROM decks').one().n,
+    });
+  }
+  async fetch(req) {
+    const url = new URL(req.url);
+    let body = null;
+    if (req.method === 'POST' || req.method === 'PUT') {
+      const t = await req.text();
+      if (t.length > 20000) return Response.json({ error: '資料太大' }, { status: 413 });
+      if (t) { try { body = JSON.parse(t); } catch { return Response.json({ error: '格式錯誤' }, { status: 400 }); } }
+    }
+    const r = await this.api.handle({ method: req.method, path: url.pathname, query: url.searchParams, body, ip: req.headers.get('x-client-ip') || 'unknown', editToken: req.headers.get('x-edit-token') || '' });
+    return new Response(JSON.stringify(r.body), { status: r.status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' } });
   }
 }

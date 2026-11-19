@@ -6,6 +6,12 @@ const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
 const { Game, DATA, validateDeck, presetDeck, isAutomated } = require('./engine/engine');
 const { aiAnswer } = require('./engine/bots');
+const { DeckApi, MemoryStore } = require('./lib/decks');
+const DECKS_FILE = process.env.DECKS_FILE || path.join(__dirname, 'data', 'public-decks.json');
+const deckApi = new DeckApi(new MemoryStore({
+  read: () => { try { return fs.readFileSync(DECKS_FILE, 'utf8'); } catch { return null; } },
+  write: t => { fs.mkdirSync(path.dirname(DECKS_FILE), { recursive: true }); fs.writeFileSync(DECKS_FILE + '.tmp', t); fs.renameSync(DECKS_FILE + '.tmp', DECKS_FILE); },
+}));
 
 const PORT = Number(process.env.PORT || 8787);
 const PUB = path.join(__dirname, 'public');
@@ -19,6 +25,7 @@ const server = http.createServer((req, res) => {
   if (u === '/cards.json') { res.writeHead(200, { 'content-type': MIME['.json'], 'cache-control': 'no-cache' }); return res.end(JSON.stringify(DATA.map(c => Object.assign({ auto: isAutomated(c.id) }, c)))); }
   if (u === '/config.json') { res.writeHead(200, { 'content-type': MIME['.json'], 'cache-control': 'no-cache' }); return res.end('{"poll":true,"host":"node"}'); }
   if (u === '/healthz') { res.writeHead(200); return res.end('ok'); }
+  if (u.startsWith('/api/decks')) return deckRoute(req, res, u);
   if (u === '/poll' || u === '/send') return httpTransport(req, res, u);
   const fp = path.normalize(path.join(PUB, u));
   if (!fp.startsWith(PUB)) { res.writeHead(403); return res.end(); }
@@ -30,6 +37,16 @@ const server = http.createServer((req, res) => {
   });
 });
 
+function deckRoute(req, res, u) {
+  const ip = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
+  let body = '';
+  req.on('data', d => { body += d; if (body.length > 2e4) req.destroy(); });
+  req.on('end', async () => {
+    let b = null; if (body) { try { b = JSON.parse(body); } catch { res.writeHead(400, { 'content-type': MIME['.json'] }); return res.end('{"error":"格式錯誤"}'); } }
+    const r = await deckApi.handle({ method: req.method, path: u, query: new URL(req.url, 'http://x').searchParams, body: b, ip, editToken: req.headers['x-edit-token'] || '' });
+    res.writeHead(r.status, { 'content-type': MIME['.json'], 'cache-control': 'no-store' }); res.end(JSON.stringify(r.body));
+  });
+}
 // ---- HTTP 長輪詢傳輸（WebSocket 不可用時的備援）----
 const httpConns = new Map();
 class HttpConn {

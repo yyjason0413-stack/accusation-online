@@ -1,0 +1,40 @@
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert');
+const { DeckApi, MemoryStore, LIM } = require('../lib/decks');
+const { presetDeck } = require('../engine/engine');
+const tok = 'a'.repeat(32);
+const mk = () => { let t = 1e12; const api = new DeckApi(new MemoryStore(), { now: () => (t += 1000) }); return api; };
+const post = (api, body, ip = '1.1.1.1') => api.handle({ method: 'POST', path: '/api/decks', body: Object.assign({ authorToken: tok }, body), ip });
+
+test('save, list, get, use, delete public deck', async () => {
+  const api = mk();
+  const r = await post(api, { name: '<b>狐狸</b>速攻', author: 'Lian', desc: '測試\n說明', cards: presetDeck('白狐神社') });
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  assert.equal(r.body.deck.name, 'b狐狸/b速攻');
+  assert.ok(!('editHash' in r.body.deck) && !('authorHash' in r.body.deck));
+  const id = r.body.deck.id;
+  const l = await api.handle({ method: 'GET', path: '/api/decks', query: { faction: '白狐神社' }, ip: 'x' });
+  assert.equal(l.body.decks.length, 1);
+  assert.equal((await api.handle({ method: 'GET', path: '/api/decks', query: { faction: '鴉教團' }, ip: 'x' })).body.decks.length, 0);
+  assert.equal((await api.handle({ method: 'POST', path: `/api/decks/${id}/use`, ip: 'x' })).body.uses, 1);
+  assert.equal((await api.handle({ method: 'POST', path: `/api/decks/${id}/use`, ip: 'x' })).body.uses, 1, 'same ip counted once per 10 min');
+  assert.equal((await api.handle({ method: 'POST', path: `/api/decks/${id}/use`, ip: 'y' })).body.uses, 2);
+  assert.equal((await api.handle({ method: 'DELETE', path: `/api/decks/${id}`, editToken: 'bad', ip: 'x' })).status, 403);
+  assert.equal((await api.handle({ method: 'DELETE', path: `/api/decks/${id}`, editToken: r.body.editToken, ip: 'x' })).status, 200);
+  assert.equal((await api.handle({ method: 'GET', path: `/api/decks/${id}`, ip: 'x' })).status, 404);
+});
+test('rejects illegal decks and enforces limits', async () => {
+  const api = mk();
+  const bad = presetDeck('白狐神社').slice(0, 20);
+  assert.equal((await post(api, { name: 'x', author: 'y', cards: bad })).status, 400);
+  assert.equal((await post(api, { name: '', author: 'y', cards: presetDeck('鴉教團') })).status, 400);
+  assert.equal((await post(api, { name: 'x', author: 'y', cards: ['nope'] })).status, 400);
+  assert.equal((await post(api, { name: 'x'.repeat(99), author: 'y', cards: presetDeck('鴉教團') })).body.deck.name.length, LIM.name);
+  let last;
+  for (let i = 0; i < LIM.postsPerHour + 2; i++) last = await post(api, { name: 'n' + i, author: 'a', cards: presetDeck('鴉教團') }, '9.9.9.9');
+  assert.equal(last.status, 429);
+  const api2 = mk();
+  for (let i = 0; i < LIM.perAuthor; i++) assert.equal((await post(api2, { name: 'n' + i, author: 'a', cards: presetDeck('鴉教團') }, 'ip' + i)).status, 201);
+  assert.equal((await post(api2, { name: 'over', author: 'a', cards: presetDeck('鴉教團') }, 'ipz')).status, 403);
+});

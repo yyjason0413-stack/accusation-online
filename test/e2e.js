@@ -8,6 +8,7 @@ const SHOTS = process.argv[4] || '/workspace/accusation/shots';
   const browser = await chromium.launch();
   const mk = async () => {
     const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, userAgent: devices['iPhone 13'].userAgent });
+    await ctx.addInitScript(() => { try { localStorage.setItem('accusation.tutorialDone', '1'); } catch {} });
     const page = await ctx.newPage();
     page.on('dialog', d => d.accept());
     page.errors = [];
